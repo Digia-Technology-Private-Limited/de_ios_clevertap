@@ -13,7 +13,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git", from: "1.0.0-beta.1"),
+        .package(url: "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git", from: "1.0.0"),
         .package(url: "https://github.com/CleverTap/clevertap-ios-sdk.git", exact: "7.5.1"),
     ],
     targets: [
