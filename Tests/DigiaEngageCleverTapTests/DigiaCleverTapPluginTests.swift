@@ -143,6 +143,29 @@ struct DigiaCleverTapPluginTests {
         #expect(payload.content.args == ["name": .string("Ada")])
     }
 
+    @Test("display unit with anchorKey maps to anchored overlay payload")
+    func displayUnitWithAnchorKeyMapsToAnchoredOverlay() async throws {
+        let bridge = FakeBridge()
+        let delegate = RecordingDelegate()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+        plugin.setup(delegate: delegate)
+
+        bridge.emitInAppPayload([
+            "id": "campaign-tooltip",
+            "command": "SHOW_TOOLTIP",
+            "viewId": "tooltip_component",
+            "anchorKey": "checkout_button",
+        ])
+
+        await Task.yield()
+
+        let payload = try #require(delegate.triggeredPayloads.first)
+        #expect(payload.id == "campaign-tooltip:SHOW_TOOLTIP:checkout_button")
+        #expect(payload.content.command == "SHOW_TOOLTIP")
+        #expect(payload.content.viewId == "tooltip_component")
+        #expect(payload.content.anchorKey == "checkout_button")
+    }
+
     @Test("dismissed events dismiss the template and other lifecycle events are no-op")
     func dismissedEventsDismissTemplate() {
         let bridge = FakeBridge()

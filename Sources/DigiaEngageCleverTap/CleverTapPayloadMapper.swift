@@ -11,18 +11,21 @@ final class CleverTapPayloadMapper {
         let viewId = stringValue(data["viewId"])
         let command = stringValue(data["command"])
         let placementKey = stringValue(data["placementKey"])
+        let anchorKey = stringValue(data["anchorKey"])
         var payloads: [InAppPayload] = []
 
         if let command, let viewId {
             let normalizedCommand = command.uppercased()
+            let payloadId = anchorKey.map { "\(campaignId):\(normalizedCommand):\($0)" } ?? campaignId
             payloads.append(
                 InAppPayload(
-                    id: campaignId,
+                    id: payloadId,
                     content: InAppPayloadContent(
                         type: presentationType(forCleverTapCommand: normalizedCommand),
                         viewId: viewId,
                         command: normalizedCommand,
-                        args: args
+                        args: args,
+                        anchorKey: anchorKey
                     ),
                     cepContext: ["templateName": templateName]
                 )
@@ -37,6 +40,22 @@ final class CleverTapPayloadMapper {
                         type: "inline",
                         placementKey: placementKey,
                         viewId: viewId,
+                        args: args
+                    ),
+                    cepContext: ["templateName": templateName]
+                )
+            )
+        }
+
+        // digiaKey-only payload: routes through the campaign store for native carousel rendering
+        let digiaKey = stringValue(data["digiaKey"])
+        if let digiaKey, placementKey == nil, viewId == nil {
+            payloads.append(
+                InAppPayload(
+                    id: campaignId,
+                    content: InAppPayloadContent(
+                        type: "inline",
+                        placementKey: digiaKey,
                         args: args
                     ),
                     cepContext: ["templateName": templateName]
