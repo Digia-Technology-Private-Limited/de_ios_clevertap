@@ -1,5 +1,5 @@
 {
-  "originHash" : "1a6ef2706750fbacc12018fc5f6651ba8a5a17a81c448bce018289f628cb4a3c",
+  "originHash" : "7bfbd9cc298cf3bfe1353ec0525fed2a3618abc5548e7e76c09e6fabff8129a7",
   "pins" : [
     {
       "identity" : "alerttoast",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git",
       "state" : {
-        "revision" : "f4e3890386c6ca7962e9b716c1086c06f2a6499b",
-        "version" : "1.0.0-beta.1"
+        "revision" : "11d4089aed8b9cab8b8282a0d18ae460f7b95a95",
+        "version" : "1.0.0"
       }
     },
     {

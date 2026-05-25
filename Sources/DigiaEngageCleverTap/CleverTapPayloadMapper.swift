@@ -11,18 +11,33 @@ final class CleverTapPayloadMapper {
         let viewId = stringValue(data["viewId"])
         let command = stringValue(data["command"])
         let placementKey = stringValue(data["placementKey"])
+        let anchorKey = stringValue(data["anchorKey"])
         var payloads: [InAppPayload] = []
+
+        // Guide campaign — triggered via display unit custom_kv.digiaKey
+        let guideKey = stringValue(data["digiaKey"]) ?? stringValue(data["digia_key"]) ?? stringValue(data["campaign_key"])
+        if let guideKey {
+            payloads.append(
+                InAppPayload(
+                    id: guideKey,
+                    content: InAppPayloadContent(type: "guide", args: [:]),
+                    cepContext: ["templateName": templateName]
+                )
+            )
+        }
 
         if let command, let viewId {
             let normalizedCommand = command.uppercased()
+            let payloadId = anchorKey.map { "\(campaignId):\(normalizedCommand):\($0)" } ?? campaignId
             payloads.append(
                 InAppPayload(
-                    id: campaignId,
+                    id: payloadId,
                     content: InAppPayloadContent(
                         type: presentationType(forCleverTapCommand: normalizedCommand),
                         viewId: viewId,
                         command: normalizedCommand,
-                        args: args
+                        args: args,
+                        anchorKey: anchorKey
                     ),
                     cepContext: ["templateName": templateName]
                 )
