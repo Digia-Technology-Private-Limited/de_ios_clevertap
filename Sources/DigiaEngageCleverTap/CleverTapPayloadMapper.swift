@@ -47,16 +47,21 @@ final class CleverTapPayloadMapper {
             )
         }
 
-        // digiaKey-only payload: routes through the campaign store for native carousel rendering
-        let digiaKey = stringValue(data["digiaKey"])
-        if let digiaKey, placementKey == nil, viewId == nil {
+        // digia_campaign_key (primary) or legacy aliases — route through the campaign store.
+        let campaignKey =
+            stringValue(data["digia_campaign_key"])
+            ?? stringValue(data["digiaKey"])
+            ?? stringValue(data["campaign_key"])
+            ?? stringValue(data["campaignKey"])
+        if let campaignKey, placementKey == nil, viewId == nil {
+            let variables = parseKvVariables(data)
             payloads.append(
                 InAppPayload(
                     id: campaignId,
                     content: InAppPayloadContent(
-                        type: "inline",
-                        placementKey: digiaKey,
-                        args: args
+                        type: "overlay",
+                        campaignKey: campaignKey,
+                        variables: variables?.isEmpty == false ? variables : nil
                     ),
                     cepContext: ["templateName": templateName]
                 )
@@ -64,6 +69,41 @@ final class CleverTapPayloadMapper {
         }
 
         return payloads
+    }
+
+    private static let reservedKvKeys: Set<String> = [
+        "digia_campaign_key", "digiaKey", "campaign_key", "campaignKey",
+        "$variables", "command", "viewId", "anchorKey", "placementKey",
+        "screenId", "args", "id", "wzrk_id", "msg_id", "campaignId",
+        "templateName",
+    ]
+
+    private func parseKvVariables(_ data: [String: Any]) -> [String: String]? {
+        var vars: [String: String] = [:]
+        // 1. Seed from $variables JSON blob (base map)
+        if let rawVars = data["$variables"] {
+            var parsed: [String: Any]?
+            if let str = rawVars as? String,
+               let jsonData = str.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                parsed = obj
+            } else if let obj = rawVars as? [String: Any] {
+                parsed = obj
+            }
+            if let parsed {
+                for (k, v) in parsed {
+                    if let s = v as? String { vars[k] = s }
+                    else if let n = v as? NSNumber { vars[k] = n.stringValue }
+                }
+            }
+        }
+        // 2. Flat top-level keys override $variables on conflict
+        for (k, v) in data {
+            if Self.reservedKvKeys.contains(k) || k.hasPrefix("wzrk_") { continue }
+            if let s = v as? String { vars[k] = s }
+            else if let n = v as? NSNumber { vars[k] = n.stringValue }
+        }
+        return vars.isEmpty ? nil : vars
     }
 
     private func presentationType(forCleverTapCommand command: String) -> String {
