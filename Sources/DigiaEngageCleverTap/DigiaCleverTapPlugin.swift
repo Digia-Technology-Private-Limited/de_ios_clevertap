@@ -48,6 +48,9 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
             onPayload: { [weak self] payload in Task { @MainActor in self?.dispatchMappedPayloads(payload) } },
             onInvalidate: { [weak self] campaignId in Task { @MainActor in self?.dispatchInvalidation(campaignId) } }
         )
+        // Recover display units that loaded on app launch before the delegate
+        // above was attached (the launch race). Deduped by unit id in the bridge.
+        bridge.replayCachedDisplayUnits()
     }
 
     public func notifyEvent(_ event: DigiaExperienceEvent, payload: InAppPayload) {
