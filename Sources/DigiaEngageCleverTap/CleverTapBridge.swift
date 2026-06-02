@@ -13,6 +13,15 @@ protocol CleverTapBridge: AnyObject {
         onInvalidate: @escaping (String) -> Void
     )
     func unregisterInAppListener()
+    /// Re-dispatches display units CleverTap has already cached natively.
+    ///
+    /// CleverTap delivers Native Display units once, via the display-unit
+    /// delegate. If a unit was loaded (and its delegate callback fired) on app
+    /// launch *before* `setup()` attached our delegate, that live event is lost
+    /// — the emitter does not buffer it. Replaying the native cache on register
+    /// recovers those otherwise-missed launch campaigns. Deduped by unit id so a
+    /// unit seen both live and via replay triggers only once.
+    func replayCachedDisplayUnits()
     func recordScreen(_ name: String)
     func dismissTemplate(_ templateName: String)
     func isAvailable() -> Bool
@@ -22,6 +31,8 @@ protocol CleverTapBridge: AnyObject {
 final class CleverTapSdkBridge: CleverTapBridge {
     private var inAppProxy: CleverTapInAppRuntimeProxy?
     private var displayUnitProxy: CleverTapDisplayUnitRuntimeProxy?
+    private var displayUnitPayload: (([String: Any]) -> Void)?
+    private var dispatchedUnitIDs = Set<String>()
     private var listenersRegistered = false
     private var templateCallbacksRegistered = false
     private var appActiveObserver: NSObjectProtocol?
@@ -53,13 +64,16 @@ final class CleverTapSdkBridge: CleverTapBridge {
         }
 
         let inAppProxy = CleverTapInAppRuntimeProxy(onPayload: onPayload, onInvalidate: onInvalidate)
-        let displayUnitProxy = CleverTapDisplayUnitRuntimeProxy(onPayload: onPayload)
+        let displayUnitProxy = CleverTapDisplayUnitRuntimeProxy { [weak self] units in
+            self?.dispatchDisplayUnits(units)
+        }
 
         instance.setInAppNotificationDelegate(inAppProxy)
         instance.setDisplayUnitDelegate(displayUnitProxy)
 
         self.inAppProxy = inAppProxy
         self.displayUnitProxy = displayUnitProxy
+        self.displayUnitPayload = onPayload
         listenersRegistered = true
 
         appActiveObserver = NotificationCenter.default.addObserver(
@@ -84,12 +98,45 @@ final class CleverTapSdkBridge: CleverTapBridge {
             listenersRegistered = false
             inAppProxy = nil
             displayUnitProxy = nil
+            displayUnitPayload = nil
+            dispatchedUnitIDs.removeAll()
             return
         }
 
         listenersRegistered = false
         inAppProxy = nil
         displayUnitProxy = nil
+        displayUnitPayload = nil
+        dispatchedUnitIDs.removeAll()
+    }
+
+    func replayCachedDisplayUnits() {
+        guard let units = CleverTap.sharedInstance()?.getAllDisplayUnits() else { return }
+        dispatchDisplayUnits(units)
+    }
+
+    /// Normalizes, dedupes (by unit id) and forwards a batch of display units.
+    /// Shared by the live `displayUnitsUpdated` delegate callback and the
+    /// `replayCachedDisplayUnits()` launch-race recovery so a unit delivered via
+    /// both paths is only dispatched once.
+    private func dispatchDisplayUnits(_ displayUnits: [Any]) {
+        guard let onPayload = displayUnitPayload else { return }
+        for unit in displayUnits {
+            let object = unit as AnyObject
+            let unitID = object.value(forKey: "unitID") as? String
+                ?? object.value(forKey: "wzrk_id") as? String
+            if let unitID, !unitID.isEmpty, !dispatchedUnitIDs.insert(unitID).inserted {
+                continue
+            }
+            let extras = object.value(forKey: "customExtras") as? [AnyHashable: Any]
+            var normalized: [String: Any] = [:]
+            if let unitID, !unitID.isEmpty { normalized["id"] = unitID }
+            for (key, value) in extras ?? [:] {
+                guard let key = key as? String else { continue }
+                normalized[key] = value
+            }
+            if !normalized.isEmpty { onPayload(normalized) }
+        }
     }
 
     func recordScreen(_ name: String) {
@@ -148,25 +195,13 @@ private final class CleverTapInAppRuntimeProxy: NSObject, CleverTapInAppNotifica
 }
 
 private final class CleverTapDisplayUnitRuntimeProxy: NSObject, CleverTapDisplayUnitDelegate {
-    private let onPayload: ([String: Any]) -> Void
+    private let onUnits: ([Any]) -> Void
 
-    init(onPayload: @escaping ([String: Any]) -> Void) {
-        self.onPayload = onPayload
+    init(onUnits: @escaping ([Any]) -> Void) {
+        self.onUnits = onUnits
     }
 
     @objc func displayUnitsUpdated(_ displayUnits: [Any]!) {
-        for unit in displayUnits ?? [] {
-            let object = unit as AnyObject
-            let unitID = object.value(forKey: "unitID") as? String
-                ?? object.value(forKey: "wzrk_id") as? String
-            let extras = object.value(forKey: "customExtras") as? [AnyHashable: Any]
-            var normalized: [String: Any] = [:]
-            if let unitID, !unitID.isEmpty { normalized["id"] = unitID }
-            for (key, value) in extras ?? [:] {
-                guard let key = key as? String else { continue }
-                normalized[key] = value
-            }
-            if !normalized.isEmpty { onPayload(normalized) }
-        }
+        onUnits(displayUnits ?? [])
     }
 }

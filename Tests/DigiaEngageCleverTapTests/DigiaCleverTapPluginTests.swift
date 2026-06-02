@@ -166,6 +166,46 @@ struct DigiaCleverTapPluginTests {
         #expect(payload.content.anchorKey == "checkout_button")
     }
 
+    @Test("setup replays display units cached before the delegate was attached")
+    func setupReplaysCachedDisplayUnits() async throws {
+        // Launch race: CleverTap loaded + fired its display-unit delegate for a
+        // unit before setup() attached ours, so the live event was missed. Only
+        // the native cache replay can recover it.
+        let bridge = FakeBridge()
+        bridge.cachedDisplayUnits = [[
+            "id": "ct_launch",
+            "placementKey": "hero_banner",
+            "viewId": "hero_component",
+        ]]
+        let delegate = RecordingDelegate()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+
+        plugin.setup(delegate: delegate)
+        await Task.yield()
+
+        #expect(bridge.didReplayCachedDisplayUnits)
+        let payload = try #require(delegate.triggeredPayloads.first)
+        #expect(payload.id == "ct_launch:hero_banner")
+    }
+
+    @Test("replay dedupes cached display units by id")
+    func replayDedupesCachedDisplayUnitsByID() async {
+        let bridge = FakeBridge()
+        let unit: [String: Any] = [
+            "id": "ct_dup",
+            "placementKey": "hero_banner",
+            "viewId": "hero_component",
+        ]
+        bridge.cachedDisplayUnits = [unit, unit]
+        let delegate = RecordingDelegate()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+
+        plugin.setup(delegate: delegate)
+        await Task.yield()
+
+        #expect(delegate.triggeredPayloads.count == 1)
+    }
+
     @Test("dismissed events dismiss the template and other lifecycle events are no-op")
     func dismissedEventsDismissTemplate() {
         let bridge = FakeBridge()
@@ -217,10 +257,16 @@ private final class FakeBridge: CleverTapBridge {
     var didUnregisterTemplateCallbacks = false
     var didRegisterInAppListener = false
     var didUnregisterInAppListener = false
+    var didReplayCachedDisplayUnits = false
     var recordedScreens: [String] = []
     var dismissedTemplates: [String] = []
     var available = true
     var defaultInstanceAvailable = true
+
+    /// Units CleverTap has cached natively; replayed (deduped by id) when
+    /// `replayCachedDisplayUnits()` is called on register.
+    var cachedDisplayUnits: [[String: Any]] = []
+    private var replayedUnitIDs = Set<String>()
 
     private var onTemplatePayload: (([String: Any]) -> Void)?
     private var onTemplateInvalidate: ((String) -> Void)?
@@ -255,6 +301,17 @@ private final class FakeBridge: CleverTapBridge {
         didUnregisterInAppListener = true
         onInAppPayload = nil
         onInAppInvalidate = nil
+        replayedUnitIDs.removeAll()
+    }
+
+    func replayCachedDisplayUnits() {
+        didReplayCachedDisplayUnits = true
+        for unit in cachedDisplayUnits {
+            if let id = unit["id"] as? String, !replayedUnitIDs.insert(id).inserted {
+                continue
+            }
+            onInAppPayload?(unit)
+        }
     }
 
     func recordScreen(_ name: String) {
