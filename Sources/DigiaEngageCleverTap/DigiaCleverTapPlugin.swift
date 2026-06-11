@@ -10,6 +10,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
     private let mapper: CleverTapPayloadMapper
     private let events: CleverTapEventBridge
     private weak var delegate: DigiaCEPDelegate?
+    private var isSetup = false
 
     public init() {
         let bridge = CleverTapSdkBridge()
@@ -39,6 +40,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
     }
 
     public func setup(delegate: DigiaCEPDelegate) {
+        guard !isSetup else { return }
+        isSetup = true
         self.delegate = delegate
         bridge.registerTemplateCallbacks(
             onPayload: { [weak self] payload in Task { @MainActor in self?.dispatchMappedPayloads(payload) } },
@@ -48,6 +51,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
             onPayload: { [weak self] payload in Task { @MainActor in self?.dispatchMappedPayloads(payload) } },
             onInvalidate: { [weak self] campaignId in Task { @MainActor in self?.dispatchInvalidation(campaignId) } }
         )
+        // Replay display units fetched before setup() (covers app-launch race).
+        bridge.getDisplayUnits().forEach { dispatchMappedPayloads($0) }
     }
 
     public func notifyEvent(_ event: DigiaExperienceEvent, payload: InAppPayload) {
@@ -76,6 +81,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
         bridge.unregisterInAppListener()
         bridge.unregisterTemplateCallbacks()
         delegate = nil
+        isSetup = false
     }
 
     private func dispatchMappedPayloads(_ rawPayload: [String: Any]) {

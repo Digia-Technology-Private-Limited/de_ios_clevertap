@@ -9,6 +9,10 @@ enum CleverTapTemplateRegistration {
     nonisolated(unsafe) private static var onInvalidated: ((String) -> Void)?
     nonisolated(unsafe) private static var activeContext: CTTemplateContext?
 
+    /// Payload buffered when onPresent fires before setCallbacks is called.
+    /// Accessed only on the main queue (activate dispatches to main).
+    nonisolated(unsafe) private static var pendingPayload: [String: Any]?
+
     static func register() {
         guard !isRegistered else { return }
         CleverTap.registerCustom(inAppTemplates: DigiaTemplateProducer())
@@ -21,19 +25,38 @@ enum CleverTapTemplateRegistration {
     ) {
         self.onPayload = onPayload
         self.onInvalidated = onInvalidated
+        if let pending = pendingPayload {
+            pendingPayload = nil
+            onPayload(pending)
+        }
     }
 
     static func clearCallbacks() {
         onPayload = nil
         onInvalidated = nil
+        pendingPayload = nil
     }
 
-    static func activate(context: CTTemplateContext, payload: [String: Any], campaignId: String) {
+    static func activate(context: CTTemplateContext, campaignKey: String, rawVariables: String?) {
         activeContext = context
         context.presented()
-        var payload = payload
-        payload["id"] = campaignId
-        onPayload?(payload)
+        var payload: [String: Any] = [
+            "id": campaignKey,
+            "digia_campaign_key": campaignKey,
+            "templateName": templateName,
+        ]
+        if let rawVars = rawVariables, !rawVars.isEmpty, rawVars != "{}" {
+            payload["$variables"] = rawVars
+        }
+        // Dispatch to main so both the buffer write and setCallbacks run on the
+        // same queue, preventing a read/write race.
+        DispatchQueue.main.async {
+            if let cb = Self.onPayload {
+                cb(payload)
+            } else {
+                Self.pendingPayload = payload
+            }
+        }
     }
 
     static func dismissTemplate(named templateName: String) {
@@ -42,12 +65,12 @@ enum CleverTapTemplateRegistration {
         context.dismissed()
     }
 
-    static func invalidate(context: CTTemplateContext, campaignId: String) {
+    static func invalidate(context: CTTemplateContext, campaignKey: String) {
         if activeContext?.name() == context.name() {
             activeContext = nil
         }
         context.dismissed()
-        onInvalidated?(campaignId)
+        onInvalidated?(campaignKey)
     }
 }
 
@@ -55,9 +78,8 @@ private final class DigiaTemplateProducer: NSObject, CTTemplateProducer {
     func defineTemplates(_: CleverTapInstanceConfig!) -> Set<CTCustomTemplate>! {
         let builder = CTInAppTemplateBuilder()
         builder.setName(CleverTapTemplateRegistration.templateName)
-        builder.addArgument("viewId", string: "")
-        builder.addArgument("command", string: "")
-        builder.addArgument("args", string: "{}")
+        builder.addArgument("digia_campaign_key", string: "")
+        builder.addArgument("variables", string: "{}")
         builder.setPresenter(DigiaTemplatePresenter())
         return [builder.build()]
     }
@@ -65,41 +87,21 @@ private final class DigiaTemplateProducer: NSObject, CTTemplateProducer {
 
 private final class DigiaTemplatePresenter: NSObject, CTTemplatePresenter {
     func onPresent(context: CTTemplateContext) {
-        let viewId = context.string(name: "viewId")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let command = context.string(name: "command")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !viewId.isEmpty, !command.isEmpty else {
-            assertionFailure("DigiaTemplate requires viewId and command.")
+        let campaignKey = context.string(name: "digia_campaign_key")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !campaignKey.isEmpty else {
             context.dismissed()
             return
         }
-
-        let campaignId = "\(CleverTapTemplateRegistration.templateName):\(viewId)"
-        var payload: [String: Any] = [
-            "templateName": context.name(),
-            "viewId": viewId,
-            "command": command.uppercased(),
-        ]
-
-        if let argsString = context.string(name: "args"),
-           let data = argsString.data(using: .utf8),
-           let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            payload["args"] = decoded
-        } else if let argsString = context.string(name: "args"), !argsString.isEmpty {
-            assertionFailure("DigiaTemplate args must decode to an object.")
-        }
-
+        let rawVariables = context.string(name: "variables")?.trimmingCharacters(in: .whitespacesAndNewlines)
         CleverTapTemplateRegistration.activate(
             context: context,
-            payload: payload,
-            campaignId: campaignId
+            campaignKey: campaignKey,
+            rawVariables: rawVariables
         )
     }
 
     func onCloseClicked(context: CTTemplateContext) {
-        let viewId = context.string(name: "viewId")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let campaignId = viewId.isEmpty
-            ? context.name()
-            : "\(CleverTapTemplateRegistration.templateName):\(viewId)"
-        CleverTapTemplateRegistration.invalidate(context: context, campaignId: campaignId)
+        let campaignKey = context.string(name: "digia_campaign_key")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? context.name()
+        CleverTapTemplateRegistration.invalidate(context: context, campaignKey: campaignKey)
     }
 }
