@@ -15,6 +15,7 @@ protocol CleverTapBridge: AnyObject {
     func unregisterInAppListener()
     func recordScreen(_ name: String)
     func dismissTemplate(_ templateName: String)
+    func getDisplayUnits() -> [[String: Any]]
     func isAvailable() -> Bool
     func hasDefaultInstance() -> Bool
 }
@@ -80,16 +81,14 @@ final class CleverTapSdkBridge: CleverTapBridge {
             NotificationCenter.default.removeObserver(observer)
             appActiveObserver = nil
         }
-        guard let instance = CleverTap.sharedInstance() else {
-            listenersRegistered = false
-            inAppProxy = nil
-            displayUnitProxy = nil
-            return
-        }
-
         listenersRegistered = false
         inAppProxy = nil
         displayUnitProxy = nil
+    }
+
+    func getDisplayUnits() -> [[String: Any]] {
+        guard let units = CleverTap.sharedInstance()?.getAllDisplayUnits() else { return [] }
+        return units.compactMap { normalizeDisplayUnit($0) }
     }
 
     func recordScreen(_ name: String) {
@@ -147,6 +146,20 @@ private final class CleverTapInAppRuntimeProxy: NSObject, CleverTapInAppNotifica
     }
 }
 
+private func normalizeDisplayUnit(_ unit: Any) -> [String: Any]? {
+    let object = unit as AnyObject
+    let unitID = object.value(forKey: "unitID") as? String
+        ?? object.value(forKey: "wzrk_id") as? String
+    let extras = object.value(forKey: "customExtras") as? [AnyHashable: Any]
+    var normalized: [String: Any] = [:]
+    if let unitID, !unitID.isEmpty { normalized["id"] = unitID }
+    for (key, value) in extras ?? [:] {
+        guard let key = key as? String else { continue }
+        normalized[key] = value
+    }
+    return normalized.isEmpty ? nil : normalized
+}
+
 private final class CleverTapDisplayUnitRuntimeProxy: NSObject, CleverTapDisplayUnitDelegate {
     private let onPayload: ([String: Any]) -> Void
 
@@ -156,17 +169,9 @@ private final class CleverTapDisplayUnitRuntimeProxy: NSObject, CleverTapDisplay
 
     @objc func displayUnitsUpdated(_ displayUnits: [Any]!) {
         for unit in displayUnits ?? [] {
-            let object = unit as AnyObject
-            let unitID = object.value(forKey: "unitID") as? String
-                ?? object.value(forKey: "wzrk_id") as? String
-            let extras = object.value(forKey: "customExtras") as? [AnyHashable: Any]
-            var normalized: [String: Any] = [:]
-            if let unitID, !unitID.isEmpty { normalized["id"] = unitID }
-            for (key, value) in extras ?? [:] {
-                guard let key = key as? String else { continue }
-                normalized[key] = value
+            if let normalized = normalizeDisplayUnit(unit) {
+                onPayload(normalized)
             }
-            if !normalized.isEmpty { onPayload(normalized) }
         }
     }
 }

@@ -28,8 +28,8 @@ struct DigiaCleverTapPluginTests {
         #expect(bridge.recordedScreens == ["checkout"])
     }
 
-    @Test("invalid template payloads are dropped")
-    func invalidTemplatePayloadsAreDropped() async {
+    @Test("payload without campaign key is dropped")
+    func payloadWithoutCampaignKeyIsDropped() async {
         let bridge = FakeBridge()
         let delegate = RecordingDelegate()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
@@ -38,7 +38,6 @@ struct DigiaCleverTapPluginTests {
         bridge.emitTemplatePayload([
             "id": "campaign-1",
             "templateName": "DigiaTemplate",
-            "command": "SHOW_DIALOG",
         ])
 
         await Task.yield()
@@ -46,124 +45,94 @@ struct DigiaCleverTapPluginTests {
         #expect(delegate.triggeredPayloads.isEmpty)
     }
 
-    @Test("nudge payload accepts args as JSON string")
-    func nudgePayloadAcceptsArgsAsJsonString() async {
+    @Test("campaign key payload maps to overlay")
+    func campaignKeyPayloadMapsToOverlay() async {
         let bridge = FakeBridge()
         let delegate = RecordingDelegate()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
         plugin.setup(delegate: delegate)
 
         bridge.emitTemplatePayload([
-            "id": "campaign-json-args",
+            "id": "campaign-1",
             "templateName": "DigiaTemplate",
-            "viewId": "abc-123",
-            "command": "SHOW_DIALOG",
-            "args": "{\"coupon\": \"SAVE20\"}",
+            "digia_campaign_key": "welcome_nudge",
         ])
 
         await Task.yield()
 
         #expect(delegate.triggeredPayloads.count == 1)
         let content = delegate.triggeredPayloads.first?.content
-        #expect(content?.command == "SHOW_DIALOG")
-        #expect(content?.viewId == "abc-123")
-        #expect(content?.args == ["coupon": .string("SAVE20")])
+        #expect(content?.type == "overlay")
+        #expect(content?.campaignKey == "welcome_nudge")
     }
 
-    @Test("custom template payloads map args without screen filtering")
-    func customTemplatePayloadsMapArgs() async {
+    @Test("campaign key payload accepts all aliases")
+    func campaignKeyPayloadAcceptsAllAliases() async {
+        let aliases = [
+            "digiaKey", "digia_key", "digia-key",
+            "campaignKey", "campaign_key", "campaign-key",
+            "digiaCampaign", "digia_campaign", "digia-campaign",
+            "digiaCampaignKey", "digia_campaign_key", "digia-campaign-key",
+        ]
+
+        for alias in aliases {
+            let bridge = FakeBridge()
+            let delegate = RecordingDelegate()
+            let plugin = DigiaCleverTapPlugin(bridge: bridge)
+            plugin.setup(delegate: delegate)
+
+            bridge.emitInAppPayload([
+                "id": "campaign-alias",
+                alias: "my_nudge",
+            ])
+
+            await Task.yield()
+
+            #expect(delegate.triggeredPayloads.count == 1, "alias '\(alias)' should produce one payload")
+            #expect(delegate.triggeredPayloads.first?.content.campaignKey == "my_nudge")
+        }
+    }
+
+    @Test("campaign key payload parses variables from $variables blob")
+    func campaignKeyPayloadParsesVariables() async {
         let bridge = FakeBridge()
         let delegate = RecordingDelegate()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
         plugin.setup(delegate: delegate)
 
         bridge.emitTemplatePayload([
-            "id": "DigiaTemplate:hero",
+            "id": "campaign-vars",
             "templateName": "DigiaTemplate",
-            "viewId": "hero",
-            "command": "SHOW_BOTTOM_SHEET",
-            "args": ["name": "Ada", "step": 2],
+            "digia_campaign_key": "promo_nudge",
+            "$variables": "{\"name\": \"Alice\", \"discount\": \"20\"}",
         ])
 
         await Task.yield()
 
         #expect(delegate.triggeredPayloads.count == 1)
-        #expect(delegate.triggeredPayloads.first?.content.command == "SHOW_BOTTOM_SHEET")
-        #expect(delegate.triggeredPayloads.first?.content.viewId == "hero")
-        #expect(delegate.triggeredPayloads.first?.content.args == [
-            "name": .string("Ada"),
-            "step": .int(2),
-        ])
+        let variables = delegate.triggeredPayloads.first?.content.variables
+        #expect(variables?["name"] == "Alice")
+        #expect(variables?["discount"] == "20")
     }
 
-    @Test("inline widget payload accepts args as JSON string")
-    func inlinePayloadAcceptsArgsAsJsonString() async throws {
+    @Test("display unit with campaign key maps to overlay payload")
+    func displayUnitWithCampaignKeyMapsToOverlay() async throws {
         let bridge = FakeBridge()
         let delegate = RecordingDelegate()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
         plugin.setup(delegate: delegate)
 
         bridge.emitInAppPayload([
-            "id": "campaign-inline-json",
-            "placementKey": "home_slot",
-            "viewId": "abc-123",
-            "args": "{\"coupon\": \"SAVE20\"}",
+            "id": "campaign-unit",
+            "digia_campaign_key": "feature_nudge",
         ])
 
         await Task.yield()
 
         let payload = try #require(delegate.triggeredPayloads.first)
-        #expect(payload.content.type == "inline")
-        #expect(payload.content.placementKey == "home_slot")
-        #expect(payload.content.viewId == "abc-123")
-        #expect(payload.content.args == ["coupon": .string("SAVE20")])
-    }
-
-    @Test("display unit payloads map to inline payloads")
-    func displayUnitPayloadsMapToInlinePayloads() async throws {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
-
-        bridge.emitInAppPayload([
-            "id": "campaign-inline",
-            "placementKey": "hero_banner",
-            "viewId": "hero_component",
-            "args": ["name": "Ada"],
-        ])
-
-        await Task.yield()
-
-        let payload = try #require(delegate.triggeredPayloads.first)
-        #expect(payload.id == "campaign-inline:hero_banner")
-        #expect(payload.content.type == "inline")
-        #expect(payload.content.placementKey == "hero_banner")
-        #expect(payload.content.viewId == "hero_component")
-        #expect(payload.content.args == ["name": .string("Ada")])
-    }
-
-    @Test("display unit with anchorKey maps to anchored overlay payload")
-    func displayUnitWithAnchorKeyMapsToAnchoredOverlay() async throws {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
-
-        bridge.emitInAppPayload([
-            "id": "campaign-tooltip",
-            "command": "SHOW_TOOLTIP",
-            "viewId": "tooltip_component",
-            "anchorKey": "checkout_button",
-        ])
-
-        await Task.yield()
-
-        let payload = try #require(delegate.triggeredPayloads.first)
-        #expect(payload.id == "campaign-tooltip:SHOW_TOOLTIP:checkout_button")
-        #expect(payload.content.command == "SHOW_TOOLTIP")
-        #expect(payload.content.viewId == "tooltip_component")
-        #expect(payload.content.anchorKey == "checkout_button")
+        #expect(payload.id == "campaign-unit")
+        #expect(payload.content.type == "overlay")
+        #expect(payload.content.campaignKey == "feature_nudge")
     }
 
     @Test("dismissed events dismiss the template and other lifecycle events are no-op")
@@ -171,8 +140,8 @@ struct DigiaCleverTapPluginTests {
         let bridge = FakeBridge()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
         let payload = InAppPayload(
-            id: "DigiaTemplate:hero",
-            content: InAppPayloadContent(type: "dialog"),
+            id: "welcome_nudge",
+            content: InAppPayloadContent(type: "overlay", campaignKey: "welcome_nudge"),
             cepContext: ["templateName": "DigiaTemplate"]
         )
 
@@ -197,6 +166,49 @@ struct DigiaCleverTapPluginTests {
         #expect(plugin.healthCheck().metadata["delegateAttached"] == "false")
     }
 
+    @Test("setup is idempotent")
+    func setupIsIdempotent() {
+        let bridge = FakeBridge()
+        let delegate = RecordingDelegate()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+
+        plugin.setup(delegate: delegate)
+        plugin.setup(delegate: delegate) // second call must be no-op
+
+        #expect(bridge.templateCallbackRegistrationCount == 1)
+        #expect(bridge.inAppListenerRegistrationCount == 1)
+    }
+
+    @Test("teardown resets setup flag so re-setup works")
+    func teardownAllowsReSetup() {
+        let bridge = FakeBridge()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+        plugin.setup(delegate: RecordingDelegate())
+        plugin.teardown()
+
+        let delegate2 = RecordingDelegate()
+        plugin.setup(delegate: delegate2)
+        bridge.emitInAppPayload(["id": "after-reset", "digia_campaign_key": "nudge"])
+
+        #expect(!delegate2.triggeredPayloads.isEmpty)
+    }
+
+    @Test("cached display units are replayed on setup")
+    func cachedDisplayUnitsReplayedOnSetup() async {
+        let bridge = FakeBridge()
+        bridge.stubbedDisplayUnits = [
+            ["id": "unit-1", "digia_campaign_key": "cached_nudge"],
+        ]
+        let delegate = RecordingDelegate()
+        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+        plugin.setup(delegate: delegate)
+
+        await Task.yield()
+
+        #expect(delegate.triggeredPayloads.count == 1)
+        #expect(delegate.triggeredPayloads.first?.content.campaignKey == "cached_nudge")
+    }
+
     @Test("healthCheck reports unhealthy when default instance is unavailable")
     func healthCheckReportsUnhealthyWhenBridgeIsNotReady() {
         let bridge = FakeBridge()
@@ -217,10 +229,13 @@ private final class FakeBridge: CleverTapBridge {
     var didUnregisterTemplateCallbacks = false
     var didRegisterInAppListener = false
     var didUnregisterInAppListener = false
+    var templateCallbackRegistrationCount = 0
+    var inAppListenerRegistrationCount = 0
     var recordedScreens: [String] = []
     var dismissedTemplates: [String] = []
     var available = true
     var defaultInstanceAvailable = true
+    var stubbedDisplayUnits: [[String: Any]] = []
 
     private var onTemplatePayload: (([String: Any]) -> Void)?
     private var onTemplateInvalidate: ((String) -> Void)?
@@ -232,6 +247,7 @@ private final class FakeBridge: CleverTapBridge {
         onInvalidate: @escaping (String) -> Void
     ) {
         didRegisterTemplateCallbacks = true
+        templateCallbackRegistrationCount += 1
         onTemplatePayload = onPayload
         onTemplateInvalidate = onInvalidate
     }
@@ -247,6 +263,7 @@ private final class FakeBridge: CleverTapBridge {
         onInvalidate: @escaping (String) -> Void
     ) {
         didRegisterInAppListener = true
+        inAppListenerRegistrationCount += 1
         onInAppPayload = onPayload
         onInAppInvalidate = onInvalidate
     }
@@ -264,6 +281,8 @@ private final class FakeBridge: CleverTapBridge {
     func dismissTemplate(_ templateName: String) {
         dismissedTemplates.append(templateName)
     }
+
+    func getDisplayUnits() -> [[String: Any]] { stubbedDisplayUnits }
 
     func isAvailable() -> Bool { available }
 
