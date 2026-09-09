@@ -61,8 +61,7 @@ struct DigiaCleverTapPluginTests {
         await Task.yield()
 
         #expect(delegate.triggeredPayloads.count == 1)
-        let content = delegate.triggeredPayloads.first?.content
-        #expect(content?.type == "overlay")
+        let content = delegate.triggeredPayloads.first
         #expect(content?.campaignKey == "welcome_nudge")
     }
 
@@ -89,7 +88,7 @@ struct DigiaCleverTapPluginTests {
             await Task.yield()
 
             #expect(delegate.triggeredPayloads.count == 1, "alias '\(alias)' should produce one payload")
-            #expect(delegate.triggeredPayloads.first?.content.campaignKey == "my_nudge")
+            #expect(delegate.triggeredPayloads.first?.campaignKey == "my_nudge")
         }
     }
 
@@ -110,7 +109,7 @@ struct DigiaCleverTapPluginTests {
         await Task.yield()
 
         #expect(delegate.triggeredPayloads.count == 1)
-        let variables = delegate.triggeredPayloads.first?.content.variables
+        let variables = delegate.triggeredPayloads.first?.variables
         #expect(variables?["name"] == "Alice")
         #expect(variables?["discount"] == "20")
     }
@@ -130,19 +129,18 @@ struct DigiaCleverTapPluginTests {
         await Task.yield()
 
         let payload = try #require(delegate.triggeredPayloads.first)
-        #expect(payload.id == "campaign-unit")
-        #expect(payload.content.type == "overlay")
-        #expect(payload.content.campaignKey == "feature_nudge")
+        #expect(payload.cepCampaignId == "campaign-unit")
+        #expect(payload.campaignKey == "feature_nudge")
     }
 
     @Test("dismissed events dismiss the template and other lifecycle events are no-op")
     func dismissedEventsDismissTemplate() {
         let bridge = FakeBridge()
         let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        let payload = InAppPayload(
-            id: "welcome_nudge",
-            content: InAppPayloadContent(type: "overlay", campaignKey: "welcome_nudge"),
-            cepContext: ["templateName": "DigiaTemplate"]
+        let payload = CEPTriggerPayload(
+            cepCampaignId: "welcome_nudge",
+            campaignKey: "welcome_nudge",
+            cepMetadata: ["templateName": "DigiaTemplate"]
         )
 
         plugin.notifyEvent(.impressed, payload: payload)
@@ -206,7 +204,7 @@ struct DigiaCleverTapPluginTests {
         await Task.yield()
 
         #expect(delegate.triggeredPayloads.count == 1)
-        #expect(delegate.triggeredPayloads.first?.content.campaignKey == "cached_nudge")
+        #expect(delegate.triggeredPayloads.first?.campaignKey == "cached_nudge")
     }
 
     @Test("healthCheck reports unhealthy when default instance is unavailable")
@@ -298,11 +296,12 @@ private final class FakeBridge: CleverTapBridge {
 }
 
 private final class RecordingDelegate: DigiaCEPDelegate {
-    var triggeredPayloads: [InAppPayload] = []
+    var triggeredPayloads: [CEPTriggerPayload] = []
     var invalidatedCampaignIDs: [String] = []
 
-    func onCampaignTriggered(_ payload: InAppPayload) {
+    func onCampaignTriggered(_ payload: CEPTriggerPayload) -> Bool {
         triggeredPayloads.append(payload)
+        return true
     }
 
     func onCampaignInvalidated(_ campaignID: String) {

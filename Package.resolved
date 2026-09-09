@@ -1,15 +1,5 @@
 {
-  "originHash" : "7bfbd9cc298cf3bfe1353ec0525fed2a3618abc5548e7e76c09e6fabff8129a7",
   "pins" : [
-    {
-      "identity" : "alerttoast",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/elai950/AlertToast.git",
-      "state" : {
-        "revision" : "b39252eacd159904afd7d718bba0afabb87f2f2f",
-        "version" : "1.3.9"
-      }
-    },
     {
       "identity" : "clevertap-ios-sdk",
       "kind" : "remoteSourceControl",
@@ -20,21 +10,12 @@
       }
     },
     {
-      "identity" : "digia_engage_ios",
+      "identity" : "de_ios_core",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git",
+      "location" : "https://github.com/Digia-Technology-Private-Limited/de_ios_core.git",
       "state" : {
-        "revision" : "11d4089aed8b9cab8b8282a0d18ae460f7b95a95",
-        "version" : "1.0.0"
-      }
-    },
-    {
-      "identity" : "digia_expr_swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Digia-Technology-Private-Limited/digia_expr_swift.git",
-      "state" : {
-        "revision" : "965d4f953f4809e09f3613ac073264af56fb11aa",
-        "version" : "0.1.0"
+        "revision" : "c84389755b8de3e490950c94576c5a649951d68c",
+        "version" : "3.13.2"
       }
     },
     {

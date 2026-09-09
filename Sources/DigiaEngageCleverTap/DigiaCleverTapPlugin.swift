@@ -55,7 +55,11 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
         bridge.getDisplayUnits().forEach { dispatchMappedPayloads($0) }
     }
 
-    public func notifyEvent(_ event: DigiaExperienceEvent, payload: InAppPayload) {
+    public func forwardScreen(_ name: String) {
+        bridge.recordScreen(name)
+    }
+
+    public func notifyEvent(_ event: DigiaExperienceEvent, payload: CEPTriggerPayload) {
         events.notifyEvent(event, payload: payload)
     }
 
@@ -86,7 +90,11 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
 
     private func dispatchMappedPayloads(_ rawPayload: [String: Any]) {
         guard let delegate else { return }
-        mapper.map(rawPayload).forEach(delegate.onCampaignTriggered)
+        for payload in mapper.map(rawPayload) {
+            if !delegate.onCampaignTriggered(payload) {
+                events.notifyEvent(.dismissed, payload: payload)
+            }
+        }
     }
 
     private func dispatchInvalidation(_ campaignId: String) {
