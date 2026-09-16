@@ -8,9 +8,9 @@ final class CleverTapEventBridge {
         self.bridge = bridge
     }
 
-    func notifyEvent(_ event: DigiaExperienceEvent, payload: InAppPayload) {
+    func notifyEvent(_ event: DigiaExperienceEvent, payload: CEPTriggerPayload) {
         guard case .dismissed = event else { return }
-        let templateName = payload.cepContext["templateName"] ?? payload.id
+        let templateName = payload.cepMetadata["templateName"] ?? payload.cepCampaignId
         bridge.dismissTemplate(templateName)
     }
 }

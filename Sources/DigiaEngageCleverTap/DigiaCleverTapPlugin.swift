@@ -55,7 +55,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin {
         bridge.getDisplayUnits().forEach { dispatchMappedPayloads($0) }
     }
 
-    public func notifyEvent(_ event: DigiaExperienceEvent, payload: InAppPayload) {
+    public func notifyEvent(_ event: DigiaExperienceEvent, payload: CEPTriggerPayload) {
         events.notifyEvent(event, payload: payload)
     }
 

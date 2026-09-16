@@ -15,7 +15,7 @@ final class CleverTapPayloadMapper {
         "id", "wzrk_id", "msg_id", "campaignId", "templateName",
     ])
 
-    func map(_ data: [String: Any]) -> [InAppPayload] {
+    func map(_ data: [String: Any]) -> [CEPTriggerPayload] {
         let campaignId = stringValue(data["id"] ?? data["wzrk_id"] ?? data["msg_id"] ?? data["campaignId"])
         guard let campaignId, !campaignId.isEmpty else { return [] }
 
@@ -25,14 +25,11 @@ final class CleverTapPayloadMapper {
 
         let variables = parseKvVariables(data)
         return [
-            InAppPayload(
-                id: campaignId,
-                content: InAppPayloadContent(
-                    type: "overlay",
-                    campaignKey: campaignKey,
-                    variables: variables?.isEmpty == false ? variables : nil
-                ),
-                cepContext: ["templateName": templateName]
+            CEPTriggerPayload(
+                cepCampaignId: campaignId,
+                campaignKey: campaignKey,
+                cepMetadata: ["templateName": templateName],
+                variables: variables?.isEmpty == false ? variables : nil
             ),
         ]
     }
