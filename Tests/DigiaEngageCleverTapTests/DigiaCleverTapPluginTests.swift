@@ -3,309 +3,314 @@
 import Foundation
 import Testing
 
+/// Everything one test needs, held together.
+///
+/// A single binding keeps all of it alive for the test's scope. That matters:
+/// the plugin holds its Digia delegate **weakly** (core owns the delegate, and a
+/// strong reference would be a cycle), so a test that let its delegate go out of
+/// scope would silently exercise the no-delegate path and pass for the wrong
+/// reason.
 @MainActor
-@Suite("DigiaCleverTapPlugin", .serialized)
+private final class Harness {
+    let client: FakeCleverTapClient
+    let delegate: FakeDigiaDelegate
+    let watchdog: ManualWatchdogScheduler
+    let plugin: DigiaCleverTapPlugin
+
+    init(
+        client: FakeCleverTapClient = FakeCleverTapClient(),
+        delegate: FakeDigiaDelegate = FakeDigiaDelegate(),
+        watchdog: ManualWatchdogScheduler = ManualWatchdogScheduler(),
+        setUp: Bool = true
+    ) {
+        self.client = client
+        self.delegate = delegate
+        self.watchdog = watchdog
+        self.plugin = DigiaCleverTapPlugin(client: client, watchdogScheduler: watchdog)
+        if setUp { plugin.setup(delegate: delegate) }
+    }
+
+    /// The trigger Digia most recently received.
+    var lastTrigger: CEPTriggerPayload { delegate.triggered[delegate.triggered.count - 1] }
+}
+
+/// Lifecycle tests for CleverTap's single visual in-app slot.
+///
+/// Every test here is ultimately asking one question: **was the slot freed?**
+/// A `DigiaTemplate` invocation that takes the slot and never dismisses stalls
+/// every later in-app in the customer's app — Digia's and their own — for the
+/// rest of the session. The scenarios mirror the Android plugin's suite and the
+/// React Native plugin's, which is the behaviour this port is held to.
+@MainActor
+@Suite("DigiaCleverTapPlugin — in-app slot lifecycle", .serialized)
 struct DigiaCleverTapPluginTests {
-    @Test("setup registers callbacks and attaches delegate")
-    func setupRegistersCallbacks() {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
 
-        plugin.setup(delegate: delegate)
+    // MARK: - The drop paths: every one of them must free the slot
 
-        #expect(bridge.didRegisterTemplateCallbacks)
-        #expect(bridge.didRegisterInAppListener)
+    @Test("frees the slot when Digia declines the campaign")
+    func freesSlotWhenDigiaDeclines() {
+        // The F1 scenario: a frequency-capped campaign. Digia answers false and
+        // emits no dismiss event, so if the plugin ignored the verdict the slot
+        // would stay held for the whole session.
+        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+        let handle = FakeTemplateHandle()
+
+        h.plugin.onTemplatePresented(handle)
+
+        #expect(h.delegate.triggered.count == 1, "Digia must actually have been asked")
+        #expect(handle.dismissedCount == 1, "slot must be freed")
+        #expect(handle.presentedCount == 0, "a declined campaign was never seen")
     }
 
-    @Test("forwardScreen records the screen through the bridge")
-    func forwardScreenRecordsThroughBridge() {
-        let bridge = FakeBridge()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+    @Test("frees the slot when the template carries no campaign key")
+    func freesSlotWhenCampaignKeyMissing() {
+        let h = Harness()
+        let handle = FakeTemplateHandle(campaignKey: "   ")
 
-        plugin.forwardScreen("checkout")
+        h.plugin.onTemplatePresented(handle)
 
-        #expect(bridge.recordedScreens == ["checkout"])
+        #expect(handle.dismissedCount == 1)
+        #expect(h.delegate.triggered.isEmpty, "nothing should reach Digia")
     }
 
-    @Test("payload without campaign key is dropped")
-    func payloadWithoutCampaignKeyIsDropped() async {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
+    @Test("frees the slot when no Digia delegate is attached")
+    func freesSlotWithoutDelegate() {
+        // Never set up — mirrors a template presenting before Digia.register().
+        let h = Harness(setUp: false)
+        let handle = FakeTemplateHandle()
 
-        bridge.emitTemplatePayload([
-            "id": "campaign-1",
-            "templateName": "DigiaTemplate",
-        ])
+        h.plugin.onTemplatePresented(handle)
 
-        await Task.yield()
-
-        #expect(delegate.triggeredPayloads.isEmpty)
+        #expect(handle.dismissedCount == 1)
     }
 
-    @Test("campaign key payload maps to overlay")
-    func campaignKeyPayloadMapsToOverlay() async {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
+    @Test("watchdog frees the slot when Digia never reports anything")
+    func watchdogFreesSlot() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+        #expect(h.delegate.triggered.count == 1)
+        #expect(handle.dismissedCount == 0, "accepted, so still held")
 
-        bridge.emitTemplatePayload([
-            "id": "campaign-1",
-            "templateName": "DigiaTemplate",
-            "digia_campaign_key": "welcome_nudge",
-        ])
+        h.watchdog.fireAll()
 
-        await Task.yield()
-
-        #expect(delegate.triggeredPayloads.count == 1)
-        let content = delegate.triggeredPayloads.first?.content
-        #expect(content?.type == "overlay")
-        #expect(content?.campaignKey == "welcome_nudge")
+        #expect(handle.dismissedCount == 1, "watchdog must free the slot")
     }
 
-    @Test("campaign key payload accepts all aliases")
-    func campaignKeyPayloadAcceptsAllAliases() async {
-        let aliases = [
-            "digiaKey", "digia_key", "digia-key",
-            "campaignKey", "campaign_key", "campaign-key",
-            "digiaCampaign", "digia_campaign", "digia-campaign",
-            "digiaCampaignKey", "digia_campaign_key", "digia-campaign-key",
-        ]
+    // MARK: - The happy path
 
-        for alias in aliases {
-            let bridge = FakeBridge()
-            let delegate = RecordingDelegate()
-            let plugin = DigiaCleverTapPlugin(bridge: bridge)
-            plugin.setup(delegate: delegate)
+    @Test("reports the view only once Digia renders, and once only")
+    func reportsViewOnlyAfterRender() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
 
-            bridge.emitInAppPayload([
-                "id": "campaign-alias",
-                alias: "my_nudge",
-            ])
+        #expect(handle.presentedCount == 0, "impression must not be booked before Digia renders")
 
-            await Task.yield()
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
 
-            #expect(delegate.triggeredPayloads.count == 1, "alias '\(alias)' should produce one payload")
-            #expect(delegate.triggeredPayloads.first?.content.campaignKey == "my_nudge")
-        }
+        #expect(handle.presentedCount == 1)
+        #expect(handle.dismissedCount == 0, "still on screen")
     }
 
-    @Test("campaign key payload parses variables from $variables blob")
-    func campaignKeyPayloadParsesVariables() async {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
+    @Test("the watchdog is cancelled once the campaign is on screen")
+    func watchdogCancelledOnDisplay() {
+        let h = Harness()
+        h.plugin.onTemplatePresented(FakeTemplateHandle())
 
-        bridge.emitTemplatePayload([
-            "id": "campaign-vars",
-            "templateName": "DigiaTemplate",
-            "digia_campaign_key": "promo_nudge",
-            "$variables": "{\"name\": \"Alice\", \"discount\": \"20\"}",
-        ])
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
 
-        await Task.yield()
-
-        #expect(delegate.triggeredPayloads.count == 1)
-        let variables = delegate.triggeredPayloads.first?.content.variables
-        #expect(variables?["name"] == "Alice")
-        #expect(variables?["discount"] == "20")
+        #expect(h.watchdog.pendingCount == 0, "a displayed campaign may stay up indefinitely")
     }
 
-    @Test("display unit with campaign key maps to overlay payload")
-    func displayUnitWithCampaignKeyMapsToOverlay() async throws {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
+    @Test("frees the slot when Digia dismisses, exactly once")
+    func freesSlotOnDismiss() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
 
-        bridge.emitInAppPayload([
-            "id": "campaign-unit",
-            "digia_campaign_key": "feature_nudge",
-        ])
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
+        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
+        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
 
-        await Task.yield()
-
-        let payload = try #require(delegate.triggeredPayloads.first)
-        #expect(payload.id == "campaign-unit")
-        #expect(payload.content.type == "overlay")
-        #expect(payload.content.campaignKey == "feature_nudge")
+        #expect(handle.dismissedCount == 1, "a repeated dismiss must not double-release")
     }
 
-    @Test("dismissed events dismiss the template and other lifecycle events are no-op")
-    func dismissedEventsDismissTemplate() {
-        let bridge = FakeBridge()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        let payload = InAppPayload(
-            id: "welcome_nudge",
-            content: InAppPayloadContent(type: "overlay", campaignKey: "welcome_nudge"),
-            cepContext: ["templateName": "DigiaTemplate"]
+    @Test("a click triggers the campaign's primary action")
+    func clickTriggersPrimaryAction() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
+        h.plugin.notifyEvent(.clicked(elementID: "cta"), payload: h.lastTrigger)
+
+        #expect(handle.triggeredActions == [TemplateSlot.primaryActionArgument])
+    }
+
+    // MARK: - Terminal paths driven from outside Digia
+
+    @Test("a CleverTap close frees the slot and invalidates the Digia campaign")
+    func cleverTapCloseInvalidates() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+
+        h.plugin.onTemplateClosed(handle)
+
+        #expect(handle.dismissedCount == 1)
+        #expect(h.delegate.invalidated == ["onboarding_tip"])
+    }
+
+    @Test("teardown while a campaign is live frees the slot")
+    func teardownFreesSlot() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+        #expect(h.delegate.triggered.count == 1, "the campaign really took the slot")
+
+        h.plugin.teardown()
+
+        #expect(handle.dismissedCount == 1, "unregistering must not strand the slot")
+    }
+
+    @Test("a dismiss for a campaign that does not hold the slot is ignored")
+    func foreignDismissIgnored() {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+
+        h.plugin.notifyEvent(
+            .dismissed,
+            payload: CEPTriggerPayload(
+                cepCampaignId: "some_other_campaign",
+                campaignKey: h.lastTrigger.campaignKey,
+                cepMetadata: h.lastTrigger.cepMetadata
+            )
         )
 
-        plugin.notifyEvent(.impressed, payload: payload)
-        plugin.notifyEvent(.clicked(elementID: "cta"), payload: payload)
-        plugin.notifyEvent(.dismissed, payload: payload)
-
-        #expect(bridge.dismissedTemplates == ["DigiaTemplate"])
+        #expect(handle.dismissedCount == 0, "the live campaign must keep the slot")
     }
 
-    @Test("teardown unregisters listeners and clears state")
-    func teardownUnregistersListeners() {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
+    // MARK: - Re-entrancy
 
-        plugin.teardown()
+    @Test("the next queued template can present from inside the release")
+    func reentrantPresentDuringRelease() {
+        // CleverTap pumps the next queued in-app synchronously from dismissed(),
+        // so releasing one campaign can re-enter the presenter with the next.
+        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+        let second = FakeTemplateHandle(campaignKey: "second_campaign")
+        let first = FakeTemplateHandle(campaignKey: "first_campaign")
+        first.onDismissed = { [plugin = h.plugin] in
+            first.onDismissed = nil
+            plugin.onTemplatePresented(second)
+        }
 
-        #expect(bridge.didUnregisterInAppListener)
-        #expect(bridge.didUnregisterTemplateCallbacks)
-        #expect(plugin.healthCheck().metadata["delegateAttached"] == "false")
+        h.plugin.onTemplatePresented(first)
+
+        #expect(first.dismissedCount == 1, "first released")
+        #expect(second.dismissedCount == 1, "second released too, not stranded")
+    }
+
+    // MARK: - Native Display: reporting only, never the slot
+
+    @Test("Native Display reports views and clicks by unit id")
+    func nativeDisplayReporting() {
+        let h = Harness()
+
+        h.client.emitDisplayUnits([displayUnit("unit_1", campaignKey: "promo_banner")])
+
+        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
+        h.plugin.notifyEvent(.clicked(elementID: nil), payload: h.lastTrigger)
+        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
+
+        #expect(h.client.viewedUnits == ["unit_1"])
+        #expect(h.client.clickedUnits == ["unit_1"])
+    }
+
+    @Test("Display Units received before setup are flushed on setup")
+    func displayUnitsBufferedBeforeSetup() {
+        let h = Harness(setUp: false)
+
+        // The listener is live from construction, so an app-launch batch that
+        // arrives while Digia.initialize() is still running is not lost.
+        h.client.emitDisplayUnits([displayUnit("early_unit", campaignKey: "launch_promo")])
+        #expect(h.delegate.triggered.isEmpty, "buffered, not delivered yet")
+
+        h.plugin.setup(delegate: h.delegate)
+
+        #expect(h.delegate.triggered.map(\.cepCampaignId) == ["early_unit"])
+    }
+
+    @Test("cached Display Units are replayed on setup")
+    func cachedDisplayUnitsReplayed() {
+        let h = Harness(client: FakeCleverTapClient(cached: [displayUnit("cached_unit", campaignKey: "cached_promo")]))
+
+        #expect(h.delegate.triggered.map(\.cepCampaignId) == ["cached_unit"])
+    }
+
+    @Test("every delivery of a unit is dispatched, including repeats")
+    func repeatedDeliveriesDispatched() {
+        let h = Harness()
+        let unit = displayUnit("repeat_unit", campaignKey: "repeat_promo")
+
+        h.client.emitDisplayUnits([unit])
+        h.client.emitDisplayUnits([unit])
+
+        #expect(h.delegate.triggered.count == 2, "re-delivery is a legitimate re-trigger")
+    }
+
+    @Test("a declined Display Unit needs no release")
+    func declinedDisplayUnitNeedsNoRelease() {
+        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+
+        h.client.emitDisplayUnits([displayUnit("declined_unit", campaignKey: "declined_promo")])
+
+        #expect(h.delegate.triggered.count == 1, "it really was offered to Digia")
+        #expect(h.client.viewedUnits.isEmpty, "Native Display holds no slot")
+    }
+
+    // MARK: - Wiring
+
+    @Test("screen changes reach CleverTap")
+    func screenChangesForwarded() {
+        let h = Harness()
+
+        h.plugin.forwardScreen("Checkout")
+
+        #expect(h.client.recordedScreens == ["Checkout"])
+    }
+
+    @Test("health reports the live campaign and clears after teardown")
+    func healthReportsLiveCampaign() {
+        let h = Harness()
+        h.plugin.onTemplatePresented(FakeTemplateHandle())
+
+        let live = h.plugin.healthCheck()
+        #expect(live.isHealthy)
+        #expect(live.metadata["activeCampaignKey"] == "onboarding_tip")
+
+        h.plugin.teardown()
+        #expect(h.plugin.healthCheck().metadata["activeCampaignKey"] == "none")
+    }
+
+    @Test("health reports unhealthy when CleverTap is unavailable")
+    func healthUnhealthyWithoutCleverTap() {
+        let client = FakeCleverTapClient()
+        client.instanceAvailable = false
+        let h = Harness(client: client)
+
+        #expect(!h.plugin.healthCheck().isHealthy)
     }
 
     @Test("setup is idempotent")
     func setupIsIdempotent() {
-        let bridge = FakeBridge()
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
+        let h = Harness()
 
-        plugin.setup(delegate: delegate)
-        plugin.setup(delegate: delegate) // second call must be no-op
+        h.plugin.setup(delegate: h.delegate)
 
-        #expect(bridge.templateCallbackRegistrationCount == 1)
-        #expect(bridge.inAppListenerRegistrationCount == 1)
-    }
-
-    @Test("teardown resets setup flag so re-setup works")
-    func teardownAllowsReSetup() {
-        let bridge = FakeBridge()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: RecordingDelegate())
-        plugin.teardown()
-
-        let delegate2 = RecordingDelegate()
-        plugin.setup(delegate: delegate2)
-        bridge.emitInAppPayload(["id": "after-reset", "digia_campaign_key": "nudge"])
-
-        #expect(!delegate2.triggeredPayloads.isEmpty)
-    }
-
-    @Test("cached display units are replayed on setup")
-    func cachedDisplayUnitsReplayedOnSetup() async {
-        let bridge = FakeBridge()
-        bridge.stubbedDisplayUnits = [
-            ["id": "unit-1", "digia_campaign_key": "cached_nudge"],
-        ]
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
-
-        await Task.yield()
-
-        #expect(delegate.triggeredPayloads.count == 1)
-        #expect(delegate.triggeredPayloads.first?.content.campaignKey == "cached_nudge")
-    }
-
-    @Test("healthCheck reports unhealthy when default instance is unavailable")
-    func healthCheckReportsUnhealthyWhenBridgeIsNotReady() {
-        let bridge = FakeBridge()
-        bridge.defaultInstanceAvailable = false
-        let delegate = RecordingDelegate()
-        let plugin = DigiaCleverTapPlugin(bridge: bridge)
-        plugin.setup(delegate: delegate)
-
-        let report = plugin.healthCheck()
-
-        #expect(!report.isHealthy)
-        #expect(report.metadata["defaultInstanceAvailable"] == "false")
-    }
-}
-
-private final class FakeBridge: CleverTapBridge {
-    var didRegisterTemplateCallbacks = false
-    var didUnregisterTemplateCallbacks = false
-    var didRegisterInAppListener = false
-    var didUnregisterInAppListener = false
-    var templateCallbackRegistrationCount = 0
-    var inAppListenerRegistrationCount = 0
-    var recordedScreens: [String] = []
-    var dismissedTemplates: [String] = []
-    var available = true
-    var defaultInstanceAvailable = true
-    var stubbedDisplayUnits: [[String: Any]] = []
-
-    private var onTemplatePayload: (([String: Any]) -> Void)?
-    private var onTemplateInvalidate: ((String) -> Void)?
-    private var onInAppPayload: (([String: Any]) -> Void)?
-    private var onInAppInvalidate: ((String) -> Void)?
-
-    func registerTemplateCallbacks(
-        onPayload: @escaping ([String: Any]) -> Void,
-        onInvalidate: @escaping (String) -> Void
-    ) {
-        didRegisterTemplateCallbacks = true
-        templateCallbackRegistrationCount += 1
-        onTemplatePayload = onPayload
-        onTemplateInvalidate = onInvalidate
-    }
-
-    func unregisterTemplateCallbacks() {
-        didUnregisterTemplateCallbacks = true
-        onTemplatePayload = nil
-        onTemplateInvalidate = nil
-    }
-
-    func registerInAppListener(
-        onPayload: @escaping ([String: Any]) -> Void,
-        onInvalidate: @escaping (String) -> Void
-    ) {
-        didRegisterInAppListener = true
-        inAppListenerRegistrationCount += 1
-        onInAppPayload = onPayload
-        onInAppInvalidate = onInvalidate
-    }
-
-    func unregisterInAppListener() {
-        didUnregisterInAppListener = true
-        onInAppPayload = nil
-        onInAppInvalidate = nil
-    }
-
-    func recordScreen(_ name: String) {
-        recordedScreens.append(name)
-    }
-
-    func dismissTemplate(_ templateName: String) {
-        dismissedTemplates.append(templateName)
-    }
-
-    func getDisplayUnits() -> [[String: Any]] { stubbedDisplayUnits }
-
-    func isAvailable() -> Bool { available }
-
-    func hasDefaultInstance() -> Bool { defaultInstanceAvailable }
-
-    func emitTemplatePayload(_ payload: [String: Any]) {
-        onTemplatePayload?(payload)
-    }
-
-    func emitInAppPayload(_ payload: [String: Any]) {
-        onInAppPayload?(payload)
-    }
-}
-
-private final class RecordingDelegate: DigiaCEPDelegate {
-    var triggeredPayloads: [InAppPayload] = []
-    var invalidatedCampaignIDs: [String] = []
-
-    func onCampaignTriggered(_ payload: InAppPayload) {
-        triggeredPayloads.append(payload)
-    }
-
-    func onCampaignInvalidated(_ campaignID: String) {
-        invalidatedCampaignIDs.append(campaignID)
+        h.client.emitDisplayUnits([displayUnit("unit_1", campaignKey: "promo")])
+        #expect(h.delegate.triggered.count == 1, "a second setup must not double-deliver")
     }
 }

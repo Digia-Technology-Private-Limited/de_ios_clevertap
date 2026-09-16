@@ -10,7 +10,7 @@ A [Digia Engage](https://github.com/Digia-Technology-Private-Limited/digia_engag
 
 | | Minimum |
 |---|---|
-| iOS | 16.0 |
+| iOS | 17.0 |
 | Swift | 6.0 |
 | Xcode | 16.0 |
 | CleverTap iOS SDK | 7.5.1 |
@@ -55,13 +55,48 @@ try await Digia.initialize(
 )
 ```
 
-### 2. Register the CleverTap plugin
+### 2. Register the CleverTap custom templates
+
+Do this **before** CleverTap initialises, in
+`application(_:didFinishLaunchingWithOptions:)`:
 
 ```swift
 import DigiaEngageCleverTap
 
+DigiaCleverTapPlugin.prepareCleverTapCustomTemplates()
+```
+
+This is not optional for custom-template campaigns. CleverTap resolves custom
+templates when its instance is created and filters out campaigns whose template
+is not registered.
+
+### 3. Register the plugin
+
+```swift
 Digia.register(DigiaCleverTapPlugin())
 ```
+
+### 4. Add the template to your CleverTap dashboard
+
+```json
+{
+  "DigiaTemplate": {
+    "type": "template",
+    "arguments": {
+      "digia_campaign_key": { "type": "string", "value": "" },
+      "variables":          { "type": "string", "value": "{}" },
+      "action":             { "type": "action" }
+    }
+  },
+  "DigiaPrimaryClick": {
+    "type": "function",
+    "isVisual": false,
+    "arguments": {}
+  }
+}
+```
+
+DEBUG builds push this definition automatically when the plugin registers.
 
 ## License
 

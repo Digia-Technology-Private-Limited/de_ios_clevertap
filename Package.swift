@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "DigiaEngageCleverTap",
     platforms: [
-        // NOTE (local dev, uncommitted): bumped from .v16 — core now requires iOS 17.
+        // Follows core, which requires iOS 17.
         .iOS(.v17),
     ],
     products: [
@@ -14,11 +14,12 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // NOTE (local dev, uncommitted): pointed at the sibling checkout instead of
-        // `from: "1.0.0"` — that constraint predates core's 3.2.0 release and forces
-        // SPM to resolve the old pre-CEPTriggerPayload core. This package's own
-        // source already targets current core; only this manifest line was stale.
+        // The sibling checkout, not `from: "1.0.0"` — that constraint predates
+        // core's CEPTriggerPayload release and resolves a core this package can no
+        // longer compile against. Repoint at a version tag once core publishes one
+        // carrying the current CEP contract.
         .package(path: "../core"),
+        // 7.5.1+ is required for `addActionArgument` and non-visual app functions.
         .package(url: "https://github.com/CleverTap/clevertap-ios-sdk.git", exact: "7.5.1"),
     ],
     targets: [
