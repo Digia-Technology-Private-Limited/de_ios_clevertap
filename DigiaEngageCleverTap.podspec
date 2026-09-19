@@ -16,6 +16,10 @@ Pod::Spec.new do |s|
   s.swift_version    = '6.0'
   s.source_files     = 'Sources/DigiaEngageCleverTap/**/*.swift'
 
-  s.dependency 'DigiaEngage', '1.0.0'
+  # A range, never an exact pin: CocoaPods has to satisfy every podspec in the
+  # host app's graph at once, and two exact pins on the same pod deadlock
+  # resolution outright — the clevertap_plugin 3.8.1 failure mode. '1.0.0' was
+  # also stale: core has been on 3.x since long before this plugin shipped.
+  s.dependency 'DigiaEngage', '~> 3.14'
   s.dependency 'CleverTap-iOS-SDK', '7.5.1'
 end
