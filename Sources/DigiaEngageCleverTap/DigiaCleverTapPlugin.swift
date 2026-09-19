@@ -35,7 +35,7 @@ import Foundation
 /// which guarantees the slot is freed on every terminal path. The Native Display
 /// path needs no such machinery: it is pure reporting.
 @MainActor
-public final class DigiaCleverTapPlugin: DigiaCEPPluginV2, TemplateSink {
+public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
     public let id = "clevertap"
 
@@ -74,7 +74,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPluginV2, TemplateSink {
         installDisplayUnitListener()
     }
 
-    // MARK: - DigiaCEPPluginV2
+    // MARK: - DigiaCEPPlugin
 
     /// Called by `Digia.register()`. Do not call manually.
     public func attach(host: DigiaCEPHost) {
@@ -136,7 +136,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPluginV2, TemplateSink {
         pendingDisplayUnits = []
     }
 
-    /// Not part of ``DigiaCEPPluginV2`` — a plugin-level diagnostic a host app
+    /// Not part of ``DigiaCEPPlugin`` — a plugin-level diagnostic a host app
     /// can call directly when in-apps stop appearing.
     public func healthCheck() -> DiagnosticReport {
         let attached = host != nil
