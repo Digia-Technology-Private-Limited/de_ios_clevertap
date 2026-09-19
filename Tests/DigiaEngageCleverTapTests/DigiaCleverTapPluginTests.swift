@@ -6,32 +6,32 @@ import Testing
 /// Everything one test needs, held together.
 ///
 /// A single binding keeps all of it alive for the test's scope. That matters:
-/// the plugin holds its Digia delegate **weakly** (core owns the delegate, and a
-/// strong reference would be a cycle), so a test that let its delegate go out of
-/// scope would silently exercise the no-delegate path and pass for the wrong
-/// reason.
+/// the plugin holds its ``DigiaCEPHost`` weakly-in-spirit (core owns the host),
+/// and the fake host owns the `PresentationController`s the tests drive, so a
+/// harness that went out of scope would silently exercise the no-host path and
+/// pass for the wrong reason.
 @MainActor
 private final class Harness {
     let client: FakeCleverTapClient
-    let delegate: FakeDigiaDelegate
-    let watchdog: ManualWatchdogScheduler
+    let host: FakeCEPHost
     let plugin: DigiaCleverTapPlugin
 
     init(
         client: FakeCleverTapClient = FakeCleverTapClient(),
-        delegate: FakeDigiaDelegate = FakeDigiaDelegate(),
-        watchdog: ManualWatchdogScheduler = ManualWatchdogScheduler(),
-        setUp: Bool = true
+        host: FakeCEPHost = FakeCEPHost(),
+        attach: Bool = true
     ) {
         self.client = client
-        self.delegate = delegate
-        self.watchdog = watchdog
-        self.plugin = DigiaCleverTapPlugin(client: client, watchdogScheduler: watchdog)
-        if setUp { plugin.setup(delegate: delegate) }
+        self.host = host
+        self.plugin = DigiaCleverTapPlugin(client: client)
+        if attach { plugin.attach(host: host) }
     }
 
     /// The trigger Digia most recently received.
-    var lastTrigger: CEPTriggerPayload { delegate.triggered[delegate.triggered.count - 1] }
+    var lastTrigger: CEPTriggerPayload { host.delivered[host.delivered.count - 1] }
+
+    /// Core's write face for the most recent delivery.
+    var core: PresentationController { host.last }
 }
 
 /// Lifecycle tests for CleverTap's single visual in-app slot.
@@ -47,19 +47,19 @@ struct DigiaCleverTapPluginTests {
 
     // MARK: - The drop paths: every one of them must free the slot
 
-    @Test("frees the slot when Digia declines the campaign")
-    func freesSlotWhenDigiaDeclines() {
-        // The F1 scenario: a frequency-capped campaign. Digia answers false and
-        // emits no dismiss event, so if the plugin ignored the verdict the slot
-        // would stay held for the whole session.
-        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+    @Test("frees the slot when Digia drops the campaign")
+    func freesSlotWhenDigiaDrops() {
+        // The F1 scenario: a frequency-capped campaign. Core settles inside
+        // deliver() and emits nothing afterwards, so a plugin that waited for a
+        // lifecycle event would hold the slot for the whole session.
+        let h = Harness(host: FakeCEPHost(syncDrop: .frequencyCapped))
         let handle = FakeTemplateHandle()
 
         h.plugin.onTemplatePresented(handle)
 
-        #expect(h.delegate.triggered.count == 1, "Digia must actually have been asked")
+        #expect(h.host.delivered.count == 1, "Digia must actually have been asked")
         #expect(handle.dismissedCount == 1, "slot must be freed")
-        #expect(handle.presentedCount == 0, "a declined campaign was never seen")
+        #expect(handle.presentedCount == 0, "a dropped campaign was never seen")
     }
 
     @Test("frees the slot when the template carries no campaign key")
@@ -70,13 +70,13 @@ struct DigiaCleverTapPluginTests {
         h.plugin.onTemplatePresented(handle)
 
         #expect(handle.dismissedCount == 1)
-        #expect(h.delegate.triggered.isEmpty, "nothing should reach Digia")
+        #expect(h.host.delivered.isEmpty, "nothing should reach Digia")
     }
 
-    @Test("frees the slot when no Digia delegate is attached")
-    func freesSlotWithoutDelegate() {
-        // Never set up — mirrors a template presenting before Digia.register().
-        let h = Harness(setUp: false)
+    @Test("frees the slot when no Digia host is attached")
+    func freesSlotWithoutHost() {
+        // Never attached — mirrors a template presenting before Digia.register().
+        let h = Harness(attach: false)
         let handle = FakeTemplateHandle()
 
         h.plugin.onTemplatePresented(handle)
@@ -84,17 +84,21 @@ struct DigiaCleverTapPluginTests {
         #expect(handle.dismissedCount == 1)
     }
 
-    @Test("watchdog frees the slot when Digia never reports anything")
-    func watchdogFreesSlot() {
+    @Test("core's acceptance watchdog frees the slot when nothing is ever rendered")
+    func watchdogFreesSlot() async {
+        // The watchdog itself moved to core at v2 (spec §10.5 G-d): the plugin's
+        // only obligation is that a `timeout` drop releases the slot like any
+        // other terminal outcome.
         let h = Harness()
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
-        #expect(h.delegate.triggered.count == 1)
+        #expect(h.host.delivered.count == 1)
         #expect(handle.dismissedCount == 0, "accepted, so still held")
 
-        h.watchdog.fireAll()
+        h.core.settle(.dropped(reason: .timeout, detail: "no verdict in time"))
+        await drainMainActor()
 
-        #expect(handle.dismissedCount == 1, "watchdog must free the slot")
+        #expect(handle.dismissedCount == 1, "a timeout drop must free the slot")
     }
 
     // MARK: - The happy path
@@ -107,32 +111,35 @@ struct DigiaCleverTapPluginTests {
 
         #expect(handle.presentedCount == 0, "impression must not be booked before Digia renders")
 
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
+        h.core.markDisplaying()
+        h.core.markDisplaying()
 
         #expect(handle.presentedCount == 1)
         #expect(handle.dismissedCount == 0, "still on screen")
     }
 
-    @Test("the watchdog is cancelled once the campaign is on screen")
-    func watchdogCancelledOnDisplay() {
-        let h = Harness()
-        h.plugin.onTemplatePresented(FakeTemplateHandle())
-
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
-
-        #expect(h.watchdog.pendingCount == 0, "a displayed campaign may stay up indefinitely")
-    }
-
-    @Test("frees the slot when Digia dismisses, exactly once")
-    func freesSlotOnDismiss() {
+    @Test("a displayed campaign keeps the slot until its outcome settles")
+    func displayedCampaignKeepsSlot() async {
         let h = Harness()
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
 
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
-        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
-        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
+        h.core.markDisplaying()
+        await drainMainActor()
+
+        #expect(handle.dismissedCount == 0, "a displayed campaign may stay up indefinitely")
+    }
+
+    @Test("frees the slot when Digia dismisses, exactly once")
+    func freesSlotOnDismiss() async {
+        let h = Harness()
+        let handle = FakeTemplateHandle()
+        h.plugin.onTemplatePresented(handle)
+
+        h.core.markDisplaying()
+        h.core.settle(.dismissed(reason: .userClose, completed: false))
+        h.core.settle(.dismissed(reason: .userClose, completed: false))
+        await drainMainActor()
 
         #expect(handle.dismissedCount == 1, "a repeated dismiss must not double-release")
     }
@@ -143,16 +150,16 @@ struct DigiaCleverTapPluginTests {
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
 
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
-        h.plugin.notifyEvent(.clicked(elementID: "cta"), payload: h.lastTrigger)
+        h.core.markDisplaying()
+        h.core.emitClicked(elementId: "cta")
 
         #expect(handle.triggeredActions == [TemplateSlot.primaryActionArgument])
     }
 
     // MARK: - Terminal paths driven from outside Digia
 
-    @Test("a CleverTap close frees the slot and invalidates the Digia campaign")
-    func cleverTapCloseInvalidates() {
+    @Test("a CleverTap close frees the slot and cancels the Digia presentation")
+    func cleverTapCloseCancels() {
         let h = Harness()
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
@@ -160,37 +167,37 @@ struct DigiaCleverTapPluginTests {
         h.plugin.onTemplateClosed(handle)
 
         #expect(handle.dismissedCount == 1)
-        #expect(h.delegate.invalidated == ["onboarding_tip"])
+        #expect(h.core.isSettled, "core must be told the experience is over")
+        #expect(h.core.presentation.outcome.settledValue == .dropped(reason: .cancelled, detail: nil))
     }
 
-    @Test("teardown while a campaign is live frees the slot")
-    func teardownFreesSlot() {
+    @Test("detach while a campaign is live frees the slot")
+    func detachFreesSlot() {
         let h = Harness()
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
-        #expect(h.delegate.triggered.count == 1, "the campaign really took the slot")
+        #expect(h.host.delivered.count == 1, "the campaign really took the slot")
 
-        h.plugin.teardown()
+        h.plugin.detach()
 
         #expect(handle.dismissedCount == 1, "unregistering must not strand the slot")
     }
 
-    @Test("a dismiss for a campaign that does not hold the slot is ignored")
-    func foreignDismissIgnored() {
+    @Test("settling a campaign that does not hold the slot leaves the slot alone")
+    func foreignSettlementIgnored() async {
         let h = Harness()
         let handle = FakeTemplateHandle()
         h.plugin.onTemplatePresented(handle)
+        let slotHolder = h.core
 
-        h.plugin.notifyEvent(
-            .dismissed,
-            payload: CEPTriggerPayload(
-                cepCampaignId: "some_other_campaign",
-                campaignKey: h.lastTrigger.campaignKey,
-                cepMetadata: h.lastTrigger.cepMetadata
-            )
-        )
+        // A Native Display delivery: a second live presentation that holds no
+        // slot. Ending it must not touch the template invocation.
+        h.client.emitDisplayUnits([displayUnit("unit_1", campaignKey: "promo_banner")])
+        h.core.settle(.dropped(reason: .screenNotTargeted, detail: nil))
+        await drainMainActor()
 
         #expect(handle.dismissedCount == 0, "the live campaign must keep the slot")
+        #expect(!slotHolder.isSettled)
     }
 
     // MARK: - Re-entrancy
@@ -199,7 +206,7 @@ struct DigiaCleverTapPluginTests {
     func reentrantPresentDuringRelease() {
         // CleverTap pumps the next queued in-app synchronously from dismissed(),
         // so releasing one campaign can re-enter the presenter with the next.
-        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+        let h = Harness(host: FakeCEPHost(syncDrop: .frequencyCapped))
         let second = FakeTemplateHandle(campaignKey: "second_campaign")
         let first = FakeTemplateHandle(campaignKey: "first_campaign")
         first.onDismissed = { [plugin = h.plugin] in
@@ -216,38 +223,39 @@ struct DigiaCleverTapPluginTests {
     // MARK: - Native Display: reporting only, never the slot
 
     @Test("Native Display reports views and clicks by unit id")
-    func nativeDisplayReporting() {
+    func nativeDisplayReporting() async {
         let h = Harness()
 
         h.client.emitDisplayUnits([displayUnit("unit_1", campaignKey: "promo_banner")])
 
-        h.plugin.notifyEvent(.impressed, payload: h.lastTrigger)
-        h.plugin.notifyEvent(.clicked(elementID: nil), payload: h.lastTrigger)
-        h.plugin.notifyEvent(.dismissed, payload: h.lastTrigger)
+        h.core.markDisplaying()
+        h.core.emitClicked()
+        h.core.settle(.dismissed(reason: .userClose, completed: true))
+        await drainMainActor()
 
         #expect(h.client.viewedUnits == ["unit_1"])
         #expect(h.client.clickedUnits == ["unit_1"])
     }
 
-    @Test("Display Units received before setup are flushed on setup")
-    func displayUnitsBufferedBeforeSetup() {
-        let h = Harness(setUp: false)
+    @Test("Display Units received before attach are flushed on attach")
+    func displayUnitsBufferedBeforeAttach() {
+        let h = Harness(attach: false)
 
         // The listener is live from construction, so an app-launch batch that
         // arrives while Digia.initialize() is still running is not lost.
         h.client.emitDisplayUnits([displayUnit("early_unit", campaignKey: "launch_promo")])
-        #expect(h.delegate.triggered.isEmpty, "buffered, not delivered yet")
+        #expect(h.host.delivered.isEmpty, "buffered, not delivered yet")
 
-        h.plugin.setup(delegate: h.delegate)
+        h.plugin.attach(host: h.host)
 
-        #expect(h.delegate.triggered.map(\.cepCampaignId) == ["early_unit"])
+        #expect(h.host.delivered.map(\.cepCampaignId) == ["early_unit"])
     }
 
-    @Test("cached Display Units are replayed on setup")
+    @Test("cached Display Units are replayed on attach")
     func cachedDisplayUnitsReplayed() {
         let h = Harness(client: FakeCleverTapClient(cached: [displayUnit("cached_unit", campaignKey: "cached_promo")]))
 
-        #expect(h.delegate.triggered.map(\.cepCampaignId) == ["cached_unit"])
+        #expect(h.host.delivered.map(\.cepCampaignId) == ["cached_unit"])
     }
 
     @Test("every delivery of a unit is dispatched, including repeats")
@@ -258,16 +266,16 @@ struct DigiaCleverTapPluginTests {
         h.client.emitDisplayUnits([unit])
         h.client.emitDisplayUnits([unit])
 
-        #expect(h.delegate.triggered.count == 2, "re-delivery is a legitimate re-trigger")
+        #expect(h.host.delivered.count == 2, "re-delivery is a legitimate re-trigger")
     }
 
-    @Test("a declined Display Unit needs no release")
-    func declinedDisplayUnitNeedsNoRelease() {
-        let h = Harness(delegate: FakeDigiaDelegate(accept: false))
+    @Test("a dropped Display Unit needs no release")
+    func droppedDisplayUnitNeedsNoRelease() {
+        let h = Harness(host: FakeCEPHost(syncDrop: .frequencyCapped))
 
-        h.client.emitDisplayUnits([displayUnit("declined_unit", campaignKey: "declined_promo")])
+        h.client.emitDisplayUnits([displayUnit("dropped_unit", campaignKey: "dropped_promo")])
 
-        #expect(h.delegate.triggered.count == 1, "it really was offered to Digia")
+        #expect(h.host.delivered.count == 1, "it really was offered to Digia")
         #expect(h.client.viewedUnits.isEmpty, "Native Display holds no slot")
     }
 
@@ -277,12 +285,12 @@ struct DigiaCleverTapPluginTests {
     func screenChangesForwarded() {
         let h = Harness()
 
-        h.plugin.forwardScreen("Checkout")
+        h.plugin.onScreenChanged("Checkout")
 
         #expect(h.client.recordedScreens == ["Checkout"])
     }
 
-    @Test("health reports the live campaign and clears after teardown")
+    @Test("health reports the live campaign and clears after detach")
     func healthReportsLiveCampaign() {
         let h = Harness()
         h.plugin.onTemplatePresented(FakeTemplateHandle())
@@ -291,7 +299,7 @@ struct DigiaCleverTapPluginTests {
         #expect(live.isHealthy)
         #expect(live.metadata["activeCampaignKey"] == "onboarding_tip")
 
-        h.plugin.teardown()
+        h.plugin.detach()
         #expect(h.plugin.healthCheck().metadata["activeCampaignKey"] == "none")
     }
 
@@ -304,13 +312,13 @@ struct DigiaCleverTapPluginTests {
         #expect(!h.plugin.healthCheck().isHealthy)
     }
 
-    @Test("setup is idempotent")
-    func setupIsIdempotent() {
+    @Test("attach is idempotent")
+    func attachIsIdempotent() {
         let h = Harness()
 
-        h.plugin.setup(delegate: h.delegate)
+        h.plugin.attach(host: h.host)
 
         h.client.emitDisplayUnits([displayUnit("unit_1", campaignKey: "promo")])
-        #expect(h.delegate.triggered.count == 1, "a second setup must not double-deliver")
+        #expect(h.host.delivered.count == 1, "a second attach must not double-deliver")
     }
 }

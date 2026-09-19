@@ -68,9 +68,8 @@ template definition above.
 
 | File | Responsibility |
 |---|---|
-| `DigiaCleverTapPlugin.swift` | The `DigiaCEPPlugin`: wiring and event routing |
-| `TemplateSlot.swift` | Single writer of presentation state; guarantees the in-app slot is freed |
-| `CampaignPresentation.swift` | The presentation handle and its exactly-once typed outcome |
+| `DigiaCleverTapPlugin.swift` | The `DigiaCEPPluginV2`: wiring and channel routing |
+| `TemplateSlot.swift` | Owns the in-app slot; the single release funnel |
 | `CleverTapTemplates.swift` | Process-global template/function registration |
 | `CleverTapPayloadMapper.swift` | CleverTap data → `CEPTriggerPayload` |
 | `CleverTapClient.swift` | The CleverTap SDK seam |
@@ -82,10 +81,14 @@ that slot from the moment its presenter runs until `dismissed()`. A presenter
 that takes the slot and never dismisses stalls **every** later in-app — Digia's
 and the app's own — for the rest of the session.
 
-`TemplateSlot` is the only writer of that state. Every terminal path — Digia
-declining, Digia dismissing, CleverTap closing, teardown, the watchdog — reaches
-the slot through one private `settle`, and `settle` is the only caller of
-`release`. A 15-second acceptance watchdog backs it up.
+`TemplateSlot` is the only thing that frees it. Every terminal path — Digia
+dropping the campaign, Digia dismissing it, CleverTap closing the template,
+detach — reaches CleverTap through one private `release`, which is the only
+caller of `setDismissed()`. The binding is core's `holdReleased` promise, plus
+two funnel entry points the promise cannot cover: a synchronous drop (already
+settled when `deliver()` returns) and `detach()` (the awaiting task has not
+necessarily run). The acceptance watchdog now lives in Digia core, not here
+(`ai_docs/cep-interface-redesign.md` §10.5 G-d).
 
 Impressions are reported only once Digia actually renders, so a declined
 campaign never books a view or consumes frequency budget.

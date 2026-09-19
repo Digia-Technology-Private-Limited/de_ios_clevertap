@@ -21,5 +21,8 @@ Pod::Spec.new do |s|
   # resolution outright — the clevertap_plugin 3.8.1 failure mode. '1.0.0' was
   # also stale: core has been on 3.x since long before this plugin shipped.
   s.dependency 'DigiaEngage', '~> 3.14'
-  s.dependency 'CleverTap-iOS-SDK', '7.5.1'
+  # Same reasoning as DigiaEngage above, and more urgent: a host app almost
+  # certainly already depends on CleverTap, so an exact pin here is the pin most
+  # likely to meet another one. 7.5.1 is the floor, not the version.
+  s.dependency 'CleverTap-iOS-SDK', '>= 7.5.1', '< 8.0'
 end

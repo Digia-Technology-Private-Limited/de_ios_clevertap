@@ -19,8 +19,14 @@ let package = Package(
         // longer compile against. Repoint at a version tag once core publishes one
         // carrying the current CEP contract.
         .package(path: "../core"),
-        // 7.5.1+ is required for `addActionArgument` and non-visual app functions.
-        .package(url: "https://github.com/CleverTap/clevertap-ios-sdk.git", exact: "7.5.1"),
+        // A range, never an exact pin. 7.5.1 is the floor (`addActionArgument`,
+        // non-visual app functions); an exact pin here propagates into every host
+        // app that resolves this package and deadlocks against any other pin on
+        // the same SDK — the `clevertap_plugin 3.8.1` failure mode, and more
+        // likely here because a host app almost certainly already carries
+        // CleverTap. Forward note: the PIP/Native-Display work raises the floor
+        // to 7.7.1 (ai_docs/cep-v2-native-rn-plan.md, "Version notes").
+        .package(url: "https://github.com/CleverTap/clevertap-ios-sdk.git", from: "7.5.1"),
     ],
     targets: [
         .target(

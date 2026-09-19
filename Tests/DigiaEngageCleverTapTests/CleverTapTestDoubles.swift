@@ -74,53 +74,51 @@ final class FakeCleverTapClient: CleverTapClient {
 
 /// Stands in for Digia core.
 ///
-/// `accept` is the verdict `onCampaignTriggered` returns — the single most
-/// important input to these tests, because honouring it is what keeps a
-/// frequency-capped campaign from stalling CleverTap's slot forever.
+/// Built on the real ``PresentationController``, so every guarantee the contract
+/// enforces below that line — exactly-once settlement, no signals after the
+/// outcome, `holdReleased` settling at or before `outcome` — holds in these tests
+/// exactly as it will in production. The fake only decides *what* happens; it
+/// cannot weaken *how*.
+///
+/// ``syncDrop`` is the single most important input here: it reproduces a
+/// synchronous rejection (unknown key, frequency cap), and honouring it is what
+/// keeps a declined campaign from stalling CleverTap's slot forever.
 @MainActor
-final class FakeDigiaDelegate: DigiaCEPDelegate {
-    var accept: Bool
-    private(set) var triggered: [CEPTriggerPayload] = []
-    private(set) var invalidated: [String] = []
+final class FakeCEPHost: DigiaCEPHost {
+    /// When set, `deliver` returns an already-settled presentation.
+    var syncDrop: DropReason?
 
-    init(accept: Bool = true) {
-        self.accept = accept
-    }
-
-    func onCampaignTriggered(_ payload: CEPTriggerPayload) -> Bool {
-        triggered.append(payload)
-        return accept
-    }
-
-    func onCampaignInvalidated(_ campaignID: String) {
-        invalidated.append(campaignID)
-    }
-}
-
-/// Watchdog scheduler that fires only when a test says so, so the acceptance
-/// timeout is exercised without waiting real seconds.
-@MainActor
-final class ManualWatchdogScheduler: WatchdogScheduling {
-    private var pending: [(id: Int, fire: @MainActor () -> Void)] = []
+    private(set) var delivered: [CEPTriggerPayload] = []
+    private(set) var controllers: [PresentationController] = []
     private var nextId = 0
 
-    func schedule(after seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> WatchdogHandle {
+    init(syncDrop: DropReason? = nil) {
+        self.syncDrop = syncDrop
+    }
+
+    func deliver(_ trigger: CEPTriggerPayload) -> CampaignPresentation {
+        delivered.append(trigger)
         nextId += 1
-        let id = nextId
-        pending.append((id, fire))
-        return WatchdogHandle { [weak self] in
-            self?.pending.removeAll { $0.id == id }
+        let controller = PresentationController(id: "p-\(nextId)", trigger: trigger)
+        controllers.append(controller)
+        if let syncDrop {
+            controller.settle(.dropped(reason: syncDrop, detail: nil))
         }
+        return controller.presentation
     }
 
-    /// Fires every watchdog that has not been cancelled.
-    func fireAll() {
-        let due = pending
-        pending = []
-        for entry in due { entry.fire() }
-    }
+    /// The controller for the most recent delivery — the test's handle on core.
+    var last: PresentationController { controllers[controllers.count - 1] }
+}
 
-    var pendingCount: Int { pending.count }
+/// Lets main-actor continuations resumed by a settlement actually run.
+///
+/// A plugin binds its release to `await presentation.holdReleased.value`, so a
+/// settlement made by the test resumes a task that runs on the *next* main-actor
+/// turn, not inline. Synchronous drops and plugin-initiated terminations do not
+/// need this — only settlements core makes on its own.
+func drainMainActor(_ turns: Int = 5) async {
+    for _ in 0..<turns { await Task.yield() }
 }
 
 @MainActor

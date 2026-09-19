@@ -1,39 +1,6 @@
 import DigiaEngage
 import Foundation
 
-/// Cancels a scheduled watchdog.
-@MainActor
-final class WatchdogHandle {
-    private let onCancel: () -> Void
-
-    init(onCancel: @escaping () -> Void) {
-        self.onCancel = onCancel
-    }
-
-    func cancel() { onCancel() }
-}
-
-/// Schedules the acceptance watchdog.
-///
-/// Injected so tests drive the timeout directly instead of waiting real seconds.
-@MainActor
-protocol WatchdogScheduling: AnyObject {
-    func schedule(after seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> WatchdogHandle
-}
-
-/// Production scheduler, backed by a cancellable `Task`.
-@MainActor
-final class TaskWatchdogScheduler: WatchdogScheduling {
-    func schedule(after seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> WatchdogHandle {
-        let task = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            fire()
-        }
-        return WatchdogHandle { task.cancel() }
-    }
-}
-
 /// Guards CleverTap's single global visual in-app slot.
 ///
 /// CleverTap shows one visual in-app at a time; a `DigiaTemplate` invocation
@@ -43,23 +10,37 @@ final class TaskWatchdogScheduler: WatchdogScheduling {
 /// session (`docs-internal/cep-integrations/clevertap.md` §9.5). That is the
 /// failure this type exists to make unreachable.
 ///
-/// ## The single funnel
+/// ## What v2 moved out of here
 ///
-/// This is the only writer of presentation state. Every terminal path — Digia
-/// declining, Digia dismissing, CleverTap closing, the plugin tearing down, an
-/// error, the watchdog — reaches the slot through the one private ``settle``,
-/// and ``settle`` is the only caller of ``release``. There is no second way to
-/// free the slot and no way to reach a terminal state without freeing it, so "a
-/// path that forgot to release" is not a bug that can be written here.
+/// The presentation handle, its exactly-once outcome and the acceptance
+/// watchdog all belong to Digia core now (``CampaignPresentation``,
+/// ``PresentationController``, spec §10.5 G-d). What is left is the part that is
+/// genuinely CleverTap's: hold the template handle, mark impressions and clicks,
+/// and hand the slot back the instant core says the hold is over.
 ///
-/// The v2 spec expresses this by binding release to a promise
-/// (`presentation.outcome.finally(release)`). Binding to *settlement* instead
-/// gives the same guarantee — one place, unskippable — without making the
-/// release depend on a task resuming, which is exactly what would fail at
-/// teardown. This mirrors the Kotlin plugin's `TemplateSlot` line for line.
+/// ## The release funnel, and why it is not just `await holdReleased`
+///
+/// The contract's one-liner is `await presentation.holdReleased.value; release()`.
+/// This type keeps that binding but funnels it — along with every other terminal
+/// path — through the single private ``release(_:)``, which is the only caller of
+/// `setDismissed()`. The funnel exists because the `await` cannot be the *only*
+/// path:
+///
+/// - `deliver()` can return an **already settled** presentation (a synchronous
+///   drop — unknown key, frequency capped). Its hold released before any task
+///   could be scheduled, so the slot is freed inline instead.
+/// - ``teardown()`` runs when the plugin is detached. Core settles what this
+///   plugin owns first, but the awaiting task has not necessarily been *run* yet,
+///   and `PresentationPromise` deliberately ignores task cancellation — a task
+///   parked on a promise core never settles never resumes at all. A release path
+///   that depended on that task surviving detach would strand the slot
+///   permanently, which is the original F1 bug wearing a new hat.
+///
+/// So: one funnel, three entry points (the awaited hold, the synchronous drop,
+/// teardown), and `release` idempotent so they can all fire.
 ///
 /// Main-actor confined: CleverTap invokes template presenters on the main
-/// thread, and Digia core requires the same.
+/// thread, and the whole v2 contract is `@MainActor`.
 @MainActor
 final class TemplateSlot {
 
@@ -68,14 +49,13 @@ final class TemplateSlot {
     /// ``CleverTapTemplates`` and on the CleverTap dashboard.
     nonisolated static let primaryActionArgument = "action"
 
-    /// Acceptance watchdog ceiling, per the Core ↔ CEP Interface v2 spec.
-    nonisolated static let defaultAcceptanceTimeout: TimeInterval = 15
-
-    /// The presentation holding the slot, with everything needed to free it.
+    /// One campaign holding the slot, with everything needed to free it.
     private final class Entry {
         let presentation: CampaignPresentation
         let handle: TemplateHandle
-        var watchdog: WatchdogHandle?
+        var unsubscribe: (@MainActor () -> Void)?
+        var holdWaiter: Task<Void, Never>?
+        var released = false
 
         init(presentation: CampaignPresentation, handle: TemplateHandle) {
             self.presentation = presentation
@@ -84,55 +64,40 @@ final class TemplateSlot {
     }
 
     private var active: Entry?
-    private var deliveryCount = 0
 
-    private let acceptanceTimeout: TimeInterval
-    private let watchdogScheduler: WatchdogScheduling
-    private let onDeliver: (CEPTriggerPayload) -> Bool
-    private let onInvalidate: (String) -> Void
-    private let onReleased: (CampaignPresentation, PresentationOutcome) -> Void
+    private let host: DigiaCEPHost
+    private let onReleased: (CampaignPresentation) -> Void
 
     /// Non-nil while a campaign holds the slot. Diagnostics only.
     var activePresentation: CampaignPresentation? { active?.presentation }
 
     /// - Parameters:
-    ///   - acceptanceTimeout: how long a delivered-but-not-yet-rendered campaign
-    ///     may stay pending before the watchdog frees the slot. The watchdog is
-    ///     the airbag, not the brakes: the explicit transitions are the
-    ///     mechanism, and this only caps the blast radius of a future bug at one
-    ///     campaign for a few seconds rather than a dead in-app channel for the
-    ///     whole session.
-    ///   - onDeliver: hands a trigger to Digia and returns its verdict.
-    ///   - onInvalidate: asks Digia to tear down an experience it is still showing.
+    ///   - host: the door into Digia core, handed to the plugin at `attach`.
     ///   - onReleased: notified after the slot is freed, for diagnostics.
     init(
-        acceptanceTimeout: TimeInterval = TemplateSlot.defaultAcceptanceTimeout,
-        watchdogScheduler: WatchdogScheduling = TaskWatchdogScheduler(),
-        onDeliver: @escaping (CEPTriggerPayload) -> Bool,
-        onInvalidate: @escaping (String) -> Void,
-        onReleased: @escaping (CampaignPresentation, PresentationOutcome) -> Void = { _, _ in }
+        host: DigiaCEPHost,
+        onReleased: @escaping (CampaignPresentation) -> Void = { _ in }
     ) {
-        self.acceptanceTimeout = acceptanceTimeout
-        self.watchdogScheduler = watchdogScheduler
-        self.onDeliver = onDeliver
-        self.onInvalidate = onInvalidate
+        self.host = host
         self.onReleased = onReleased
     }
 
-    /// Takes the slot for `trigger` and offers it to Digia.
+    /// Takes the slot for `trigger` and delivers it into Digia.
     ///
-    /// Total function: never throws, and always leaves the slot consistent. A
-    /// rejection produces an already-settled presentation and an already-freed
-    /// slot, so callers have one code path either way.
+    /// Total function: never throws, and always leaves the slot consistent — the
+    /// invocation is either delivered and owned, or handed straight back to
+    /// CleverTap. `nil` means nothing was delivered and the handle is already
+    /// free.
     @discardableResult
-    func deliver(handle: TemplateHandle, trigger: CEPTriggerPayload) -> CampaignPresentation {
+    func deliver(handle: TemplateHandle, trigger: CEPTriggerPayload) -> CampaignPresentation? {
         // Defensive. CleverTap's one-visual-in-app rule should make an overlap
         // unreachable; if it happens anyway, freeing the incumbent beats wedging
-        // the slot. Settling releases synchronously, so `active` is normally free
-        // again by the next line.
+        // the slot. `cancel()` asks core to end it properly; `release` is the
+        // backstop that frees CleverTap's side whatever core does.
         if let incumbent = active {
             Log.warn("template presented while \(incumbent.presentation.id) still holds the slot — superseding it")
-            settle(incumbent.presentation, .dropped(reason: .superseded))
+            incumbent.presentation.cancel()
+            release(incumbent)
         }
 
         // Freeing the incumbent above can re-enter this method, because
@@ -141,113 +106,48 @@ final class TemplateSlot {
         // not be clobbered — hand this invocation straight back instead.
         if active != nil {
             Log.warn("slot was re-taken while superseding — declining '\(handle.templateName)'")
-            return settledPresentation(
-                trigger: trigger,
-                outcome: .dropped(reason: .superseded, detail: "slot re-taken during release"),
-                handle: handle
-            )
+            handle.setDismissed()
+            return nil
         }
 
-        deliveryCount += 1
-        let presentation = CampaignPresentation(
-            id: "ct-\(deliveryCount)",
-            trigger: trigger,
-            onCancel: { [weak self] cancelled in
-                guard let self else { return }
-                self.settle(cancelled, cancelled.terminalOutcome(drop: .cancelled, dismiss: .cancelled))
-            }
-        )
+        let presentation = host.deliver(trigger)
         let entry = Entry(presentation: presentation, handle: handle)
         active = entry
-        entry.watchdog = watchdogScheduler.schedule(after: acceptanceTimeout) { [weak self] in
-            guard let self, presentation.state == .pending else { return }
-            Log.warn(
-                "watchdog: \(presentation.id) (key=\(trigger.campaignKey)) was never rendered "
-                    + "within \(self.acceptanceTimeout)s — freeing the in-app slot"
-            )
-            self.settle(
-                presentation,
-                .dropped(reason: .timeout, detail: "no Digia lifecycle event within \(self.acceptanceTimeout)s")
-            )
+
+        // Cleared by core on settlement, so there is nothing to unsubscribe on
+        // the normal path; the stored closure is for the teardown path.
+        entry.unsubscribe = presentation.onSignal { [weak self] signal in
+            self?.forward(signal, to: entry)
         }
 
-        // From here on this method must not touch `active`: settling releases
-        // synchronously, which can re-enter deliver() through CleverTap's queue.
-        guard onDeliver(trigger) else {
-            Log.info("\(presentation.id) (key=\(trigger.campaignKey)) declined by Digia — freeing the in-app slot")
-            settle(presentation, .dropped(reason: .rejectedByDigia))
+        // A synchronous drop already released its hold. Free the slot inline
+        // rather than waiting for a task that would only confirm what is already
+        // true — and, on this path, would run after CleverTap had been left
+        // holding the slot across a suspension point.
+        if presentation.holdReleased.isSettled {
+            Log.info("\(presentation.id) (key=\(trigger.campaignKey)) dropped synchronously — freeing the in-app slot")
+            release(entry)
             return presentation
         }
-        return presentation
-    }
 
-    /// Builds an already-settled handle for a trigger that never took the slot,
-    /// and frees `handle` if one was supplied.
-    ///
-    /// Callers that could not deliver still get a real ``CampaignPresentation``,
-    /// so "rejected before we started" and "rejected by Digia" are the same shape
-    /// to everything downstream.
-    @discardableResult
-    func settledPresentation(
-        trigger: CEPTriggerPayload,
-        outcome: PresentationOutcome,
-        handle: TemplateHandle? = nil
-    ) -> CampaignPresentation {
-        deliveryCount += 1
-        let presentation = CampaignPresentation(
-            id: "ct-\(deliveryCount)",
-            trigger: trigger,
-            onCancel: { _ in }
-        )
-        presentation.settle(outcome)
-        handle?.setDismissed()
-        Log.info("\(presentation.id) settled as \(outcome) without taking the slot")
-        onReleased(presentation, outcome)
-        return presentation
-    }
-
-    /// Digia rendered the experience. Reports the impression to CleverTap, once.
-    ///
-    /// Deliberately deferred to this point rather than done when the presenter
-    /// fired: `presented()` records the viewed event and consumes frequency
-    /// budget, so calling it before Digia commits would book an impression for a
-    /// campaign the user never saw (`clevertap.md` §9.3).
-    func onDigiaImpressed(_ payload: CEPTriggerPayload) {
-        guard let entry = entry(for: payload), entry.presentation.markDisplaying() else { return }
-        entry.watchdog?.cancel()
-        entry.watchdog = nil
-        Log.info("\(entry.presentation.id) displayed — reporting the impression to CleverTap")
-        entry.handle.setPresented()
-    }
-
-    /// Digia reported a click. Fires the campaign's primary action, if it
-    /// declared one.
-    func onDigiaClicked(_ payload: CEPTriggerPayload) {
-        guard let entry = entry(for: payload) else { return }
-        Log.info("\(entry.presentation.id) clicked — triggering '\(Self.primaryActionArgument)'")
-        entry.handle.triggerAction(named: Self.primaryActionArgument)
-    }
-
-    /// Digia reported the experience closed. Terminal — frees the slot.
-    func onDigiaDismissed(_ payload: CEPTriggerPayload) {
-        guard let entry = entry(for: payload) else {
-            Log.info(
-                "dismiss for '\(payload.cepCampaignId)' does not hold the in-app slot "
-                    + "(active=\(self.active?.presentation.trigger.cepCampaignId ?? "none")) — nothing to free"
-            )
-            return
+        // `weak self` and `weak entry`: if core never settles this presentation
+        // the task parks forever (PresentationPromise ignores cancellation by
+        // design), so it must not keep the plugin or the slot alive.
+        entry.holdWaiter = Task { @MainActor [weak self, weak entry] in
+            await presentation.holdReleased.value
+            guard let self, let entry else { return }
+            self.release(entry)
         }
-        settle(entry.presentation, entry.presentation.terminalOutcome(drop: .cancelled, dismiss: .digiaDismissed))
+        return presentation
     }
 
     /// CleverTap asked the template to close — an in-app action used the close
     /// behaviour, or the campaign was pulled. Terminal on CleverTap's side too
     /// (`clevertap.md` §9.7).
     ///
-    /// Digia is invalidated first so it can tear its UI down and emit its own
-    /// terminal event, which settles the presentation through the normal path.
-    /// The settle afterwards covers the case where Digia had nothing to dismiss
-    /// and stayed silent; it is a no-op if the invalidation already settled it.
+    /// Core is cancelled first so it can tear its UI down and settle the
+    /// presentation; the release afterwards is the backstop for the case where
+    /// core had nothing to dismiss, and is a no-op if the cancel already freed it.
     func onCleverTapClose(_ handle: TemplateHandle) {
         guard let entry = active else {
             // A close for an invocation that never took the slot. It is still a
@@ -257,60 +157,62 @@ final class TemplateSlot {
             handle.setDismissed()
             return
         }
-        Log.info("CleverTap closed '\(handle.templateName)' → invalidating \(entry.presentation.id)")
-        onInvalidate(entry.presentation.trigger.cepCampaignId)
-        settle(entry.presentation, entry.presentation.terminalOutcome(drop: .cancelled, dismiss: .cancelled))
+        Log.info("CleverTap closed '\(handle.templateName)' → cancelling \(entry.presentation.id)")
+        entry.presentation.cancel()
+        release(entry)
     }
 
-    /// Frees the slot because the plugin is going away.
+    /// Frees the slot because the plugin is being detached.
     ///
-    /// Digia core has no equivalent of the v2 spec's guarantee that a plugin's
-    /// presentations are settled before it is detached, so the plugin settles its
-    /// own here. Without this, unregistering or replacing the plugin mid-campaign
-    /// strands CleverTap's slot with nothing left alive to free it.
+    /// Core settles a plugin's presentations before calling `detach()`, but the
+    /// task awaiting that settlement has not necessarily run yet — and if a core
+    /// ever fails to settle, nothing else would ever free CleverTap's slot. This
+    /// is the last moment it can be recovered, so it is taken unconditionally.
     func teardown() {
         guard let entry = active else { return }
         Log.info("teardown while \(entry.presentation.id) holds the slot — freeing")
-        settle(
-            entry.presentation,
-            entry.presentation.terminalOutcome(drop: .pluginDetached, dismiss: .pluginDetached)
-        )
+        entry.presentation.cancel()
+        release(entry)
     }
 
     // MARK: - Internals
 
-    /// The one place a presentation becomes terminal, and the only caller of
-    /// ``release``. Losing a settlement race is a silent no-op, which is what
-    /// makes every method above idempotent.
-    private func settle(_ presentation: CampaignPresentation, _ outcome: PresentationOutcome) {
-        guard presentation.settle(outcome) else { return }
-        release(presentation, outcome)
+    /// Reports what core says happened back to CleverTap.
+    ///
+    /// `displayed` is deliberately the trigger for `setPresented()` rather than
+    /// the presenter firing: `presented()` records the impression and consumes
+    /// frequency budget, so calling it before Digia commits would book a view for
+    /// a campaign the user never saw (`clevertap.md` §9.3).
+    private func forward(_ signal: PresentationSignal, to entry: Entry) {
+        guard !entry.released else { return }
+        switch signal {
+        case .displayed:
+            Log.info("\(entry.presentation.id) displayed — reporting the impression to CleverTap")
+            entry.handle.setPresented()
+        case .clicked:
+            Log.info("\(entry.presentation.id) clicked — triggering '\(Self.primaryActionArgument)'")
+            entry.handle.triggerAction(named: Self.primaryActionArgument)
+        }
     }
 
-    /// Frees the slot. Ordered so it reads as free *before* CleverTap is told,
-    /// because `dismissed()` synchronously pumps the next queued in-app, which
-    /// can re-enter ``deliver(handle:trigger:)`` from inside this call.
+    /// The one place the slot is freed, and the only caller of `setDismissed()`.
     ///
-    /// Idempotent: a presentation that no longer holds the slot returns early.
-    private func release(_ presentation: CampaignPresentation, _ outcome: PresentationOutcome) {
-        guard let entry = active, entry.presentation === presentation else { return }
-        active = nil
-        entry.watchdog?.cancel()
-        entry.watchdog = nil
+    /// Idempotent, so every entry point above can call it without checking.
+    /// Ordered so the slot reads as free *before* CleverTap is told, because
+    /// `dismissed()` synchronously pumps the next queued in-app, which can
+    /// re-enter ``deliver(handle:trigger:)`` from inside this call.
+    private func release(_ entry: Entry) {
+        guard !entry.released else { return }
+        entry.released = true
+
+        entry.unsubscribe?()
+        entry.unsubscribe = nil
+        entry.holdWaiter?.cancel()
+        entry.holdWaiter = nil
+        if active === entry { active = nil }
 
         entry.handle.setDismissed()
-        Log.info("\(presentation.id) settled as \(outcome) → in-app slot freed")
-        onReleased(presentation, outcome)
-    }
-
-    /// The entry this event belongs to, or `nil` to ignore it.
-    ///
-    /// Correlation is by `cepCampaignId` against the single slot holder. Digia
-    /// core routes events by payload rather than by a presentation id, so this is
-    /// the strongest correlation available; the single-slot invariant makes it
-    /// sufficient. Native Display triggers never reach here — they take no slot.
-    private func entry(for payload: CEPTriggerPayload) -> Entry? {
-        guard let entry = active, entry.presentation.state != .settled else { return nil }
-        return entry.presentation.trigger.cepCampaignId == payload.cepCampaignId ? entry : nil
+        Log.info("\(entry.presentation.id) released the in-app slot (state=\(entry.presentation.state.value))")
+        onReleased(entry.presentation)
     }
 }

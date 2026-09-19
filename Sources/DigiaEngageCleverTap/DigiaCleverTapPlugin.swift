@@ -35,24 +35,21 @@ import Foundation
 /// which guarantees the slot is freed on every terminal path. The Native Display
 /// path needs no such machinery: it is pure reporting.
 @MainActor
-public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
+public final class DigiaCleverTapPlugin: DigiaCEPPluginV2, TemplateSink {
 
-    public let identifier = "clevertap"
+    public let id = "clevertap"
 
     private let client: CleverTapClient
     private let mapper: CleverTapPayloadMapper
-    private let acceptanceTimeout: TimeInterval
-    private let watchdogScheduler: WatchdogScheduling
 
-    private weak var delegate: DigiaCEPDelegate?
+    private var host: DigiaCEPHost?
     private var slot: TemplateSlot?
-    private var isSetup = false
 
-    /// Display Unit batches that arrived before ``setup(delegate:)``.
+    /// Display Unit batches that arrived before ``attach(host:)``.
     ///
     /// CleverTap can deliver `app_opened` units while `Digia.initialize()` is
     /// still in flight, so the listener is installed at construction and buffers
-    /// until there is a delegate to hand them to. Unlike a custom template, a
+    /// until there is a host to hand them to. Unlike a custom template, a
     /// buffered unit holds nothing hostage — it is data, not a slot.
     private var pendingDisplayUnits: [DisplayUnit] = []
 
@@ -62,14 +59,10 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
     init(
         client: CleverTapClient,
-        mapper: CleverTapPayloadMapper = CleverTapPayloadMapper(),
-        acceptanceTimeout: TimeInterval = TemplateSlot.defaultAcceptanceTimeout,
-        watchdogScheduler: WatchdogScheduling = TaskWatchdogScheduler()
+        mapper: CleverTapPayloadMapper = CleverTapPayloadMapper()
     ) {
         self.client = client
         self.mapper = mapper
-        self.acceptanceTimeout = acceptanceTimeout
-        self.watchdogScheduler = watchdogScheduler
 
         // Safety net only — by the time a plugin instance exists CleverTap has
         // usually initialised, and any campaign that targeted the template before
@@ -81,20 +74,14 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         installDisplayUnitListener()
     }
 
-    // MARK: - DigiaCEPPlugin
+    // MARK: - DigiaCEPPluginV2
 
     /// Called by `Digia.register()`. Do not call manually.
-    public func setup(delegate: DigiaCEPDelegate) {
-        guard !isSetup else { return }
-        isSetup = true
-        self.delegate = delegate
+    public func attach(host: DigiaCEPHost) {
+        guard self.host == nil else { return }
+        self.host = host
 
-        slot = TemplateSlot(
-            acceptanceTimeout: acceptanceTimeout,
-            watchdogScheduler: watchdogScheduler,
-            onDeliver: { [weak delegate] trigger in delegate?.onCampaignTriggered(trigger) ?? false },
-            onInvalidate: { [weak delegate] campaignID in delegate?.onCampaignInvalidated(campaignID) }
-        )
+        slot = TemplateSlot(host: host)
 
         // Must come after the slot exists: attaching flushes any template
         // invocation buffered before registration, synchronously.
@@ -118,7 +105,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         if !pendingDisplayUnits.isEmpty {
             let buffered = pendingDisplayUnits
             pendingDisplayUnits = []
-            Log.info("flushing \(buffered.count) Display Unit(s) buffered before setup")
+            Log.info("flushing \(buffered.count) Display Unit(s) buffered before attach")
             deliverDisplayUnits(buffered)
         }
 
@@ -130,62 +117,44 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     }
 
     /// Called by `Digia.setCurrentScreen()`. Do not call manually.
-    public func forwardScreen(_ name: String) {
-        client.recordScreen(name)
-    }
-
-    /// Called by Digia core when an experience reports a lifecycle event.
-    ///
-    /// Routes by channel: a trigger carrying a `displayUnitId` came from Native
-    /// Display and is reported straight back to CleverTap, everything else
-    /// belongs to the custom-template slot.
-    public func notifyEvent(_ event: DigiaExperienceEvent, payload: CEPTriggerPayload) {
-        if let unitId = payload.cepMetadata[CleverTapPayloadMapper.metadataDisplayUnitId], !unitId.isEmpty {
-            trackDisplayUnit(event, unitId: unitId)
-            return
-        }
-
-        guard let slot else { return }
-        switch event {
-        case .impressed: slot.onDigiaImpressed(payload)
-        case .clicked: slot.onDigiaClicked(payload)
-        case .dismissed: slot.onDigiaDismissed(payload)
-        }
+    public func onScreenChanged(_ screenName: String) {
+        client.recordScreen(screenName)
     }
 
     /// Called by Digia core on unregister or replacement. Do not call manually.
-    public func teardown() {
-        // Free the slot before anything else is dismantled. Digia core does not
-        // settle a plugin's live presentations before detaching it, so this is
-        // the last moment the in-app slot can be recovered.
+    public func detach() {
+        // Free the slot before anything else is dismantled. Core settles this
+        // plugin's presentations first, but the task awaiting that settlement has
+        // not necessarily run yet — this is the last moment the in-app slot can
+        // be recovered from inside the plugin.
         slot?.teardown()
         CleverTapTemplates.detach(self)
         client.setDisplayUnitListener(nil)
 
         slot = nil
-        delegate = nil
+        host = nil
         pendingDisplayUnits = []
-        isSetup = false
     }
 
+    /// Not part of ``DigiaCEPPluginV2`` — a plugin-level diagnostic a host app
+    /// can call directly when in-apps stop appearing.
     public func healthCheck() -> DiagnosticReport {
-        let delegateAttached = delegate != nil
+        let attached = host != nil
         let instanceAvailable = client.hasInstance()
-        let healthy = isSetup && delegateAttached && instanceAvailable
+        let healthy = attached && instanceAvailable
         return DiagnosticReport(
             isHealthy: healthy,
             issue: healthy ? nil
-                : (!isSetup || !delegateAttached)
+                : !attached
                     ? "clevertap plugin not registered with Digia"
                     : "no CleverTap instance available",
             resolution: healthy ? nil
-                : (!isSetup || !delegateAttached)
+                : !attached
                     ? "call Digia.register(DigiaCleverTapPlugin())"
                     : "initialise CleverTap before registering the plugin",
             metadata: [
-                "identifier": identifier,
-                "isSetup": String(isSetup),
-                "delegateAttached": String(delegateAttached),
+                "id": id,
+                "attached": String(attached),
                 "cleverTapAvailable": String(instanceAvailable),
                 "activePresentation": slot?.activePresentation?.id ?? "none",
                 "activeCampaignKey": slot?.activePresentation?.trigger.campaignKey ?? "none",
@@ -196,28 +165,23 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     // MARK: - TemplateSink
 
     func onTemplatePresented(_ handle: TemplateHandle) {
-        guard let slot, delegate != nil else {
+        guard let slot else {
             // Cannot deliver, so the invocation must be handed back immediately —
             // holding it would stall every later in-app (`clevertap.md` §9.6).
-            Log.warn("'\(handle.templateName)' presented with no Digia delegate — freeing the slot")
+            Log.warn("'\(handle.templateName)' presented with no Digia host attached — freeing the slot")
             handle.setDismissed()
             return
         }
 
         guard let trigger = mapper.mapTemplate(handle) else {
+            // Nothing to deliver: without a campaign key core has no campaign to
+            // look up. Free the slot rather than deliver a trigger core could
+            // only drop.
             Log.warn(
                 "'\(handle.templateName)' carries no \(CleverTapTemplates.argCampaignKey) "
                     + "— freeing the slot without rendering"
             )
-            slot.settledPresentation(
-                trigger: CEPTriggerPayload(
-                    cepCampaignId: handle.templateName,
-                    campaignKey: "",
-                    cepMetadata: [CleverTapPayloadMapper.metadataTemplateName: handle.templateName]
-                ),
-                outcome: .dropped(reason: .missingCampaignKey),
-                handle: handle
-            )
+            handle.setDismissed()
             return
         }
 
@@ -243,9 +207,9 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
     private func onDisplayUnitsLoaded(_ units: [DisplayUnit]) {
         guard !units.isEmpty else { return }
-        guard delegate != nil else {
+        guard host != nil else {
             pendingDisplayUnits.append(contentsOf: units)
-            Log.info("buffering \(units.count) Display Unit(s) received before setup")
+            Log.info("buffering \(units.count) Display Unit(s) received before attach")
             return
         }
         deliverDisplayUnits(units)
@@ -255,16 +219,23 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     ///
     /// Every delivery of a unit is dispatched, including a repeat of one already
     /// seen: CleverTap re-delivers its active units on each refresh, and
-    /// de-duplicating here would silently drop a legitimate re-trigger. The
-    /// verdict is deliberately ignored — Native Display holds no slot, so a
-    /// declined unit costs nothing and needs no release.
+    /// de-duplicating here would silently drop a legitimate re-trigger. Nothing
+    /// binds to the outcome — Native Display holds no slot, so a dropped unit
+    /// costs nothing and needs no release.
     private func deliverDisplayUnits(_ units: [DisplayUnit]) {
-        guard let delegate else { return }
+        guard let host else { return }
         let triggers = mapper.mapDisplayUnits(units)
         guard !triggers.isEmpty else { return }
         Log.info("delivering \(triggers.count) Native Display campaign(s)")
         for trigger in triggers {
-            _ = delegate.onCampaignTriggered(trigger)
+            let unitId = trigger.cepMetadata[CleverTapPayloadMapper.metadataDisplayUnitId] ?? ""
+            let presentation = host.deliver(trigger)
+            // Core drops its listeners on settlement, so this needs no
+            // unsubscribe and no task — which is the whole difference between a
+            // channel that holds a slot and one that only reports.
+            _ = presentation.onSignal { [weak self] signal in
+                self?.trackDisplayUnit(signal, unitId: unitId)
+            }
         }
     }
 
@@ -273,17 +244,16 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     /// CleverTap never infers these — a Display Unit has no impression until the
     /// app says so (`clevertap.md` §12.8). Dismissal has no CleverTap
     /// counterpart: Native Display has no slot to release and no close event to
-    /// record.
-    private func trackDisplayUnit(_ event: DigiaExperienceEvent, unitId: String) {
-        switch event {
-        case .impressed:
+    /// record, which is why nothing here binds to the outcome.
+    private func trackDisplayUnit(_ signal: PresentationSignal, unitId: String) {
+        guard !unitId.isEmpty else { return }
+        switch signal {
+        case .displayed:
             client.pushDisplayUnitViewed(unitId)
             Log.info("Native Display view reported for '\(unitId)'")
         case .clicked:
             client.pushDisplayUnitClicked(unitId)
             Log.info("Native Display click reported for '\(unitId)'")
-        case .dismissed:
-            break
         }
     }
 
