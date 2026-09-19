@@ -72,55 +72,6 @@ final class FakeCleverTapClient: CleverTapClient {
     func hasInstance() -> Bool { instanceAvailable }
 }
 
-/// Stands in for Digia core.
-///
-/// Built on the real ``PresentationController``, so every guarantee the contract
-/// enforces below that line — exactly-once settlement, no signals after the
-/// outcome, `holdReleased` settling at or before `outcome` — holds in these tests
-/// exactly as it will in production. The fake only decides *what* happens; it
-/// cannot weaken *how*.
-///
-/// ``syncDrop`` is the single most important input here: it reproduces a
-/// synchronous rejection (unknown key, frequency cap), and honouring it is what
-/// keeps a declined campaign from stalling CleverTap's slot forever.
-@MainActor
-final class FakeCEPHost: DigiaCEPHost {
-    /// When set, `deliver` returns an already-settled presentation.
-    var syncDrop: DropReason?
-
-    private(set) var delivered: [CEPTriggerPayload] = []
-    private(set) var controllers: [PresentationController] = []
-    private var nextId = 0
-
-    init(syncDrop: DropReason? = nil) {
-        self.syncDrop = syncDrop
-    }
-
-    func deliver(_ trigger: CEPTriggerPayload) -> CampaignPresentation {
-        delivered.append(trigger)
-        nextId += 1
-        let controller = PresentationController(id: "p-\(nextId)", trigger: trigger)
-        controllers.append(controller)
-        if let syncDrop {
-            controller.settle(.dropped(reason: syncDrop, detail: nil))
-        }
-        return controller.presentation
-    }
-
-    /// The controller for the most recent delivery — the test's handle on core.
-    var last: PresentationController { controllers[controllers.count - 1] }
-}
-
-/// Lets main-actor continuations resumed by a settlement actually run.
-///
-/// A plugin binds its release to `await presentation.holdReleased.value`, so a
-/// settlement made by the test resumes a task that runs on the *next* main-actor
-/// turn, not inline. Synchronous drops and plugin-initiated terminations do not
-/// need this — only settlements core makes on its own.
-func drainMainActor(_ turns: Int = 5) async {
-    for _ in 0..<turns { await Task.yield() }
-}
-
 @MainActor
 func displayUnit(
     _ unitId: String,
