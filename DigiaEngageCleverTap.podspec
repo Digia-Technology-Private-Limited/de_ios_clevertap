@@ -12,7 +12,7 @@ Pod::Spec.new do |s|
     :git => 'https://github.com/Digia-Technology-Private-Limited/digia_engage_clevertap_ios.git',
     :tag => s.version.to_s
   }
-  s.platform         = :ios, '16.0'
+  s.platform         = :ios, '15.0'
   s.swift_version    = '6.0'
   s.source_files     = 'Sources/DigiaEngageCleverTap/**/*.swift'
 

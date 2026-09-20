@@ -4,8 +4,11 @@ import PackageDescription
 let package = Package(
     name: "DigiaEngageCleverTap",
     platforms: [
-        // Follows core, which requires iOS 17.
-        .iOS(.v17),
+        // Follows core, which requires iOS 15. Keep these in lockstep with
+        // DigiaEngage's Package.swift and podspec — a plugin must never demand a
+        // higher floor than the core it depends on, or it silently excludes apps
+        // that can run the core perfectly well.
+        .iOS(.v15),
     ],
     products: [
         .library(
