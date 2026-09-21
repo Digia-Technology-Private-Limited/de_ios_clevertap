@@ -25,7 +25,8 @@ struct CleverTapPayloadMapper: Sendable {
     /// Marks a trigger as Native Display. Its presence selects the tracking path.
     static let metadataDisplayUnitId = "displayUnitId"
 
-    private static let variablesBlobKey = "$variables"
+    /// The older spelling of `CleverTapTemplates.argVariables`.
+    private static let argsKey = "args"
     private static let wzrkPrefix = "wzrk_"
 
     /// Accepted spellings of the campaign key in a Display Unit's key-values.
@@ -42,8 +43,8 @@ struct CleverTapPayloadMapper: Sendable {
     ]
 
     private static let reservedKvKeys: Set<String> = Set(campaignKeyNames).union([
-        variablesBlobKey,
         CleverTapTemplates.argVariables,
+        argsKey,
         "id", "wzrk_id", "msg_id", "campaignId", metadataTemplateName,
     ])
 
@@ -114,7 +115,7 @@ struct CleverTapPayloadMapper: Sendable {
         return nil
     }
 
-    /// Parses the `variables` / `$variables` blob into flat string variables.
+    /// Parses the `variables` / `args` blob into flat string variables.
     ///
     /// Strict JSON first. The lenient fallback exists because CleverTap profile
     /// expressions can interpolate unquoted values into the blob
@@ -143,7 +144,7 @@ struct CleverTapPayloadMapper: Sendable {
     private func parseKvVariables(_ keyValues: [String: String]) -> [String: String] {
         var variables: [String: String] = [:]
 
-        if let blob = keyValues[Self.variablesBlobKey] ?? keyValues[CleverTapTemplates.argVariables] {
+        if let blob = keyValues[CleverTapTemplates.argVariables] ?? keyValues[Self.argsKey] {
             variables = parseVariableBlob(blob)
         }
 

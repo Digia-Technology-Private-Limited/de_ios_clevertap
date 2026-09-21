@@ -119,13 +119,29 @@ struct CleverTapPayloadMapperTests {
         #expect(mapper.mapDisplayUnits(units).first?.variables == ["headline": "Big sale"])
     }
 
+    @Test("prefers the variables blob over the older args spelling")
+    func variablesBeatArgs() throws {
+        let units = [
+            DisplayUnit(
+                unitId: "unit_1",
+                customKeyValues: [
+                    "digia_campaign_key": "promo_banner",
+                    "variables": #"{"name":"Priya"}"#,
+                    "args": #"{"name":"Stale"}"#,
+                ])
+        ]
+
+        let trigger = try #require(mapper.mapDisplayUnits(units).first)
+        #expect(trigger.variables == ["name": "Priya"])
+    }
+
     @Test("merges the variables blob with flat key-values")
     func mergesBlobAndKeyValues() {
         let units = [
             displayUnit(
                 "unit_1",
                 campaignKey: "promo_banner",
-                extra: ["$variables": #"{"name":"Priya"}"#, "headline": "Big sale"]
+                extra: ["args": #"{"name":"Priya"}"#, "headline": "Big sale"]
             ),
         ]
 
