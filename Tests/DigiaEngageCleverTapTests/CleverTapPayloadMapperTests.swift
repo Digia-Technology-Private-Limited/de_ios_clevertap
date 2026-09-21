@@ -43,7 +43,10 @@ struct CleverTapPayloadMapperTests {
 
         #expect(trigger.variables?["name"] == "Priya")
         #expect(trigger.variables?["visits"] == "3")
-        #expect(trigger.variables?["vip"] == "1", "NSNumber bridges booleans to 1/0")
+        // Was "1" — NSNumber.stringValue renders a boolean that way, and this test used to
+        // enshrine it. Android and Flutter both say "true", and a campaign that interpolates
+        // {{ vip }} should not read differently depending on which phone it lands on.
+        #expect(trigger.variables?["vip"] == "true")
     }
 
     @Test("falls back to lenient parsing for unquoted profile values")
