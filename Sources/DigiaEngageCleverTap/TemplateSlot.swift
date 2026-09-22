@@ -125,7 +125,7 @@ final class TemplateSlot {
         // true — and, on this path, would run after CleverTap had been left
         // holding the slot across a suspension point.
         if presentation.holdReleased.isSettled {
-            Log.info("\(presentation.id) (key=\(trigger.campaignKey)) dropped synchronously — freeing the in-app slot")
+            Log.info("Dropped synchronously — freeing the in-app slot", campaign: trigger.campaignKey)
             release(entry)
             return presentation
         }
@@ -153,11 +153,11 @@ final class TemplateSlot {
             // A close for an invocation that never took the slot. It is still a
             // live CleverTap invocation, so it must reach a terminal state here
             // or it stalls the queue exactly as a forgotten dismiss would.
-            Log.info("close for '\(handle.templateName)' with no campaign holding the slot")
+            Log.info("Close for '\(handle.templateName)' with no campaign holding the slot")
             handle.setDismissed()
             return
         }
-        Log.info("CleverTap closed '\(handle.templateName)' → cancelling \(entry.presentation.id)")
+        Log.info("CleverTap closed '\(handle.templateName)' — cancelling presentation", campaign: entry.presentation.trigger.campaignKey)
         entry.presentation.cancel()
         release(entry)
     }
@@ -170,7 +170,7 @@ final class TemplateSlot {
     /// is the last moment it can be recovered, so it is taken unconditionally.
     func teardown() {
         guard let entry = active else { return }
-        Log.info("teardown while \(entry.presentation.id) holds the slot — freeing")
+        Log.info("Teardown while holding the slot — freeing", campaign: entry.presentation.trigger.campaignKey)
         entry.presentation.cancel()
         release(entry)
     }
@@ -187,10 +187,10 @@ final class TemplateSlot {
         guard !entry.released else { return }
         switch signal {
         case .displayed:
-            Log.info("\(entry.presentation.id) displayed — reporting the impression to CleverTap")
+            Log.info("CEP impression marked (setPresented)", campaign: entry.presentation.trigger.campaignKey)
             entry.handle.setPresented()
         case .clicked:
-            Log.info("\(entry.presentation.id) clicked — triggering '\(Self.primaryActionArgument)'")
+            Log.info("CEP click marked (triggerAction)", campaign: entry.presentation.trigger.campaignKey)
             entry.handle.triggerAction(named: Self.primaryActionArgument)
         }
     }
@@ -212,7 +212,7 @@ final class TemplateSlot {
         if active === entry { active = nil }
 
         entry.handle.setDismissed()
-        Log.info("\(entry.presentation.id) released the in-app slot (state=\(entry.presentation.state.value))")
+        Log.info("CEP hold released (setDismissed, state=\(entry.presentation.state.value))", campaign: entry.presentation.trigger.campaignKey)
         onReleased(entry.presentation)
     }
 }

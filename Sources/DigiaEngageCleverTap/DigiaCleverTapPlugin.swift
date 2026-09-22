@@ -114,10 +114,12 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         // holds only what is currently active (`clevertap.md` §12.6).
         let cached = client.cachedDisplayUnits()
         if !cached.isEmpty { deliverDisplayUnits(cached) }
+        Log.info("Plugin attached")
     }
 
     /// Called by `Digia.setCurrentScreen()`. Do not call manually.
     public func onScreenChanged(_ screenName: String) {
+        Log.debug("Screen recorded (screen=\(screenName))")
         client.recordScreen(screenName)
     }
 
@@ -134,6 +136,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         slot = nil
         host = nil
         pendingDisplayUnits = []
+        Log.info("Plugin detached")
     }
 
     /// Not part of ``DigiaCEPPlugin`` — a plugin-level diagnostic a host app
@@ -185,7 +188,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
             return
         }
 
-        Log.info("'\(handle.templateName)' presented → delivering key='\(trigger.campaignKey)'")
+        Log.info("Received (template=\(handle.templateName))", campaign: trigger.campaignKey)
         slot.deliver(handle: handle, trigger: trigger)
     }
 
