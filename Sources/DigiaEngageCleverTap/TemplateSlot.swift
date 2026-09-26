@@ -212,7 +212,7 @@ final class TemplateSlot {
         if active === entry { active = nil }
 
         entry.handle.setDismissed()
-        Log.info("CEP hold released (setDismissed, state=\(entry.presentation.state.value))", campaign: entry.presentation.trigger.campaignKey)
+        Log.info("CleverTap setDismissed (presentationId=\(entry.presentation.id))", campaign: entry.presentation.trigger.campaignKey)
         onReleased(entry.presentation)
     }
 }
