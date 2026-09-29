@@ -9,8 +9,13 @@ enum Log {
         log.i(message(), campaign: campaign)
     }
 
-    static func warn(_ message: @autoclosure @escaping () -> String, campaign: String? = nil) {
-        log.w(message(), campaign: campaign)
+    static func warn(
+        _ message: @autoclosure @escaping () -> String,
+        campaign: String? = nil,
+        stage: TimelineStage? = nil,
+        reason: DiagnosticReason? = nil
+    ) {
+        log.w(message(), campaign: campaign, stage: stage, reason: reason)
     }
 
     static func error(_ message: @autoclosure @escaping () -> String, campaign: String? = nil) {
