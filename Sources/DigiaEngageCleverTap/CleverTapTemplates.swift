@@ -1,4 +1,5 @@
 import CleverTapSDK
+import DigiaEngage
 import Foundation
 
 /// Receives live CleverTap custom-template invocations. Implemented by the plugin.
@@ -98,7 +99,13 @@ enum CleverTapTemplates {
     /// at once. Never wait, never call presented().
     private static func dispatchPresented(_ handle: TemplateHandle) {
         guard let sink else {
-            Log.warn("dropping '\(handle.templateName)' as not_ready — no plugin attached — freeing the in-app slot")
+            let key = handle.string(named: argCampaignKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            Log.warn(
+                "dropping '\(handle.templateName)' as not_ready — no plugin attached — freeing the in-app slot",
+                campaign: (key?.isEmpty ?? true) ? nil : key,
+                stage: .trigger,
+                reason: DropReason.notReady
+            )
             handle.setDismissed()
             return
         }
