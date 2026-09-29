@@ -83,8 +83,6 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
         slot = TemplateSlot(host: host)
 
-        // Must come after the slot exists: attaching flushes any template
-        // invocation buffered before registration, synchronously.
         CleverTapTemplates.attach(self)
 
         if !client.hasInstance() {
@@ -171,7 +169,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         guard let slot else {
             // Cannot deliver, so the invocation must be handed back immediately —
             // holding it would stall every later in-app (`clevertap.md` §9.6).
-            Log.warn("'\(handle.templateName)' presented with no Digia host attached — freeing the slot")
+            Log.warn("dropping '\(handle.templateName)' as not_ready — no Digia host attached — freeing the slot")
             handle.setDismissed()
             return
         }

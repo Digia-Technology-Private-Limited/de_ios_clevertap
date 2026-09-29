@@ -62,22 +62,8 @@ enum CleverTapTemplates {
     nonisolated static let argCampaignKey = "digia_campaign_key"
     nonisolated static let argVariables = "variables"
 
-    /// How long a template invocation may sit buffered waiting for
-    /// `Digia.register()` before the slot is handed back.
-    ///
-    /// Buffering at all is what lets an app-launch campaign survive the gap
-    /// between CleverTap firing and Digia being registered. Bounding it is what
-    /// stops that same gap from stalling the customer's entire in-app channel
-    /// when registration never happens — a misconfigured app would otherwise hold
-    /// the slot for the whole session.
-    nonisolated static let attachGrace: TimeInterval = 10
-
     private static var isRegistered = false
     private static weak var sink: TemplateSink?
-
-    /// A template invocation that arrived before any plugin was attached, with
-    /// the task that will release it if none ever attaches.
-    private static var buffered: (handle: TemplateHandle, timeout: Task<Void, Never>)?
 
     /// Registers `DigiaTemplate` and `DigiaPrimaryClick` with CleverTap.
     ///
@@ -92,16 +78,10 @@ enum CleverTapTemplates {
         CleverTap.registerCustom(inAppTemplates: DigiaTemplateProducer())
     }
 
-    /// Attaches `newSink` and flushes any invocation buffered while nothing was
-    /// attached. Replaces a previous sink; the plugin being replaced is
+    /// Attaches `newSink`. Replaces a previous sink; the plugin being replaced is
     /// responsible for freeing anything it still holds.
     static func attach(_ newSink: TemplateSink) {
         sink = newSink
-        guard let pending = buffered else { return }
-        buffered = nil
-        pending.timeout.cancel()
-        Log.info("flushing a template invocation buffered before attach")
-        newSink.onTemplatePresented(pending.handle)
     }
 
     /// Detaches `oldSink` if it is still the current one.
@@ -113,47 +93,22 @@ enum CleverTapTemplates {
         if sink === oldSink { sink = nil }
     }
 
-    /// Routes a live invocation to the attached sink, or buffers it under a
-    /// bounded grace period. Always ends with the invocation owned by someone.
+    /// Routes a live invocation to the attached sink, or drops it at once.
+    /// No sink means not ready — log warn as not_ready and free the slot
+    /// at once. Never wait, never call presented().
     private static func dispatchPresented(_ handle: TemplateHandle) {
-        if let sink {
-            sink.onTemplatePresented(handle)
+        guard let sink else {
+            Log.warn("dropping '\(handle.templateName)' as not_ready — no plugin attached — freeing the in-app slot")
+            handle.setDismissed()
             return
         }
-
-        if let displaced = buffered {
-            // Only one invocation can be buffered; CleverTap's single visual slot
-            // makes a second one unreachable in practice, but a stranded handle
-            // would stall the queue, so free it rather than drop the reference.
-            buffered = nil
-            displaced.timeout.cancel()
-            Log.warn("a second template invocation arrived while buffered — freeing the first")
-            displaced.handle.setDismissed()
-        }
-
-        Log.info("no plugin attached yet — buffering '\(handle.templateName)'")
-        let timeout = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(attachGrace * 1_000_000_000))
-            guard !Task.isCancelled, let pending = buffered,
-                  pending.handle.identity === handle.identity else { return }
-            buffered = nil
-            Log.warn(
-                "no Digia plugin registered within \(attachGrace)s of '\(handle.templateName)' "
-                    + "presenting — freeing the in-app slot. Call Digia.register(DigiaCleverTapPlugin()) during startup."
-            )
-            handle.setDismissed()
-        }
-        buffered = (handle, timeout)
+        sink.onTemplatePresented(handle)
     }
 
     private static func dispatchClosed(_ handle: TemplateHandle) {
         if let sink {
             sink.onTemplateClosed(handle)
             return
-        }
-        if let pending = buffered, pending.handle.identity === handle.identity {
-            buffered = nil
-            pending.timeout.cancel()
         }
         // Terminal either way — an unowned close must still free the slot.
         handle.setDismissed()
