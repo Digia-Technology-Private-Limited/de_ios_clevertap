@@ -32,8 +32,8 @@ protocol TemplateHandle: AnyObject {
     /// Safe to call without a preceding ``setPresented()``, so a dropped campaign
     /// frees the slot without recording a view it never got.
     ///
-    /// May re-enter the presenter synchronously — CleverTap pumps the next queued
-    /// in-app from inside this call.
+    /// May re-enter the presenter on a later task — CleverTap queues the next
+    /// queued in-app async on the notification queue.
     func setDismissed()
 
     /// Fires the template's `action` argument — the campaign author's primary
