@@ -176,7 +176,11 @@ final class CleverTapSdkClient: CleverTapClient {
     nonisolated private static func stringify(_ value: Any) -> String? {
         switch value {
         case let string as String: return string.isEmpty ? nil : string
-        case let number as NSNumber: return number.stringValue
+        // `NSNumber.stringValue` renders a JSON `true` as "1", so `{{ on_sale }}` read "1"
+        // here and "true" on Android and Flutter. A boolean interpolates as a boolean.
+        case let number as NSNumber:
+            return CFGetTypeID(number) == CFBooleanGetTypeID()
+                ? String(number.boolValue) : number.stringValue
         default: return nil
         }
     }
