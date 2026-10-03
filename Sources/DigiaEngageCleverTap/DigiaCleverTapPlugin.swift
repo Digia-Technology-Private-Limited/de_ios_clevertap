@@ -215,14 +215,14 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         deliverTemplate(handle: handle, trigger: trigger)
     }
 
-    private func deliverTemplate(handle: TemplateHandle, trigger: CEPTriggerPayload) {
+    private func deliverTemplate(handle: TemplateHandle, trigger: CEPTriggerPayload, heldAt: Date? = nil) {
         guard let slot else {
             handle.setDismissed()
             return
         }
         guard !slot.deliver(handle: handle, trigger: trigger) else { return }
         Log.info("Core not ready — buffering the template again", campaign: trigger.campaignKey)
-        pendingTemplates.add((handle, trigger))
+        pendingTemplates.add((handle, trigger), heldAt: heldAt)
     }
 
     func onTemplateClosed(_ handle: TemplateHandle) {
@@ -245,11 +245,11 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         guard !units.isEmpty else { return }
         let triggers = mapper.mapDisplayUnits(units)
         guard canDeliver else {
-            triggers.forEach(pendingDisplayUnits.add)
+            triggers.forEach { pendingDisplayUnits.add($0) }
             Log.info("Core not ready — buffering \(triggers.count) Native Display campaign(s)")
             return
         }
-        deliverDisplayUnits(triggers)
+        deliverDisplayUnits(triggers.map { ($0, nil) })
     }
 
     private var canDeliver: Bool { host?.isReady == true || (host != nil && hostFailed) }
@@ -260,16 +260,16 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         var templates = pendingTemplates.drain()
         if !templates.isEmpty {
             let newest = templates.removeFirst()
-            for older in templates {
+            for older in templates.map(\.item) {
                 Log.warn(
                     "dropping buffered '\(older.handle.templateName)' as surface_busy — a newer template flushes",
                     campaign: older.trigger.campaignKey, stage: .trigger, reason: DropReason.surfaceBusy
                 )
                 older.handle.setDismissed()
             }
-            deliverTemplate(handle: newest.handle, trigger: newest.trigger)
+            deliverTemplate(handle: newest.item.handle, trigger: newest.item.trigger, heldAt: newest.heldAt)
         }
-        deliverDisplayUnits(pendingDisplayUnits.drain())
+        deliverDisplayUnits(pendingDisplayUnits.drain().map { ($0.item, $0.heldAt) })
     }
 
     private nonisolated static func displayUnitId(_ trigger: CEPTriggerPayload) -> String {
@@ -283,14 +283,14 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     /// de-duplicating here would silently drop a legitimate re-trigger. Nothing
     /// binds to the outcome — Native Display holds no slot, so a dropped unit
     /// costs nothing and needs no release.
-    private func deliverDisplayUnits(_ triggers: [CEPTriggerPayload]) {
+    private func deliverDisplayUnits(_ triggers: [(trigger: CEPTriggerPayload, heldAt: Date?)]) {
         guard let host, !triggers.isEmpty else { return }
         Log.info("delivering \(triggers.count) Native Display campaign(s)")
-        for trigger in triggers {
+        for (trigger, heldAt) in triggers {
             let unitId = Self.displayUnitId(trigger)
             let presentation = host.deliver(trigger)
             if presentation.outcome.settledValue?.isHostNotReady == true {
-                pendingDisplayUnits.add(trigger)
+                pendingDisplayUnits.add(trigger, heldAt: heldAt)
                 continue
             }
             // Core drops its listeners on settlement, so this needs no
