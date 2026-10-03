@@ -83,3 +83,25 @@ func displayUnit(
         customKeyValues: ["digia_campaign_key": campaignKey].merging(extra) { _, new in new }
     )
 }
+
+/// A manual clock and timer for the pending buffer: `advance` fires due timers.
+@MainActor
+final class FakeClock {
+    var now = Date(timeIntervalSince1970: 0)
+    private var timers: [(id: Int, due: Date, work: @MainActor () -> Void)] = []
+    private var nextId = 0
+
+    func schedule(_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> () -> Void {
+        nextId += 1
+        let id = nextId
+        timers.append((id, now.addingTimeInterval(delay), work))
+        return { [weak self] in self?.timers.removeAll { $0.id == id } }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+        while let index = timers.firstIndex(where: { $0.due <= now }) {
+            timers.remove(at: index).work()
+        }
+    }
+}

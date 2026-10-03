@@ -73,15 +73,17 @@ struct DigiaCleverTapPluginTests {
         #expect(h.host.delivered.isEmpty, "nothing should reach Digia")
     }
 
-    @Test("frees the slot when no Digia host is attached")
-    func freesSlotWithoutHost() {
+    @Test("holds the template when no Digia host is attached")
+    func holdsTemplateWithoutHost() {
         // Never attached — mirrors a template presenting before Digia.register().
         let h = Harness(attach: false)
         let handle = FakeTemplateHandle()
 
         h.plugin.onTemplatePresented(handle)
 
-        #expect(handle.dismissedCount == 1)
+        #expect(handle.dismissedCount == 0, "buffered until Core is ready")
+        h.plugin.attach(host: h.host)
+        #expect(h.host.delivered.count == 1, "flushed on attach to a ready host")
     }
 
     @Test("core's acceptance watchdog frees the slot when nothing is ever rendered")
