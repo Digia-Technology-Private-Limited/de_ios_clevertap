@@ -337,7 +337,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         pendingDisplayUnits.dropAll(DropReason.initializationFailed)
     }
 
-    private func onPendingTemplateDropped(_ trigger: CEPTriggerPayload, _ reason: DiagnosticReason) {
+    private func onPendingTemplateDropped(_ trigger: CEPTriggerPayload, _ reason: DropReason) {
         Log.warn(
             "Dropped while held; freeing the in-app slot",
             campaign: trigger.campaignKey, stage: .trigger, reason: reason
@@ -345,7 +345,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         heldTemplates.removeValue(forKey: trigger.cepCampaignId)?.setDismissed()
     }
 
-    private func onPendingDisplayUnitDropped(_ trigger: CEPTriggerPayload, _ reason: DiagnosticReason) {
+    private func onPendingDisplayUnitDropped(_ trigger: CEPTriggerPayload, _ reason: DropReason) {
         Log.warn(
             "Display unit dropped while held (unitID=\(trigger.cepCampaignId))",
             campaign: trigger.campaignKey, stage: .trigger, reason: reason
