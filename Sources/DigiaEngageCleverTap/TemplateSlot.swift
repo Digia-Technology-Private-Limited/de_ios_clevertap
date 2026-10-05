@@ -86,10 +86,14 @@ final class TemplateSlot {
     ///
     /// Total function: never throws, and always leaves the slot consistent — the
     /// invocation is either delivered and owned, or handed straight back to
-    /// CleverTap. `nil` means nothing was delivered and the handle is already
-    /// free.
+    /// CleverTap. `nil` means nothing was delivered: the handle is already
+    /// free, or `holdIfNotReady` held it again.
     @discardableResult
-    func deliver(handle: TemplateHandle, trigger: CEPTriggerPayload) -> CampaignPresentation? {
+    func deliver(
+        handle: TemplateHandle,
+        trigger: CEPTriggerPayload,
+        holdIfNotReady: (CampaignPresentation) -> Bool
+    ) -> CampaignPresentation? {
         // Defensive. CleverTap's one-visual-in-app rule should make an overlap
         // unreachable; if it happens anyway, freeing the incumbent beats wedging
         // the slot. `cancel()` asks core to end it properly; `release` is the
@@ -111,6 +115,8 @@ final class TemplateSlot {
         }
 
         let presentation = host.deliver(trigger)
+        // A held template keeps the slot until it is shown or dropped.
+        if holdIfNotReady(presentation) { return nil }
         let entry = Entry(presentation: presentation, handle: handle)
         active = entry
 

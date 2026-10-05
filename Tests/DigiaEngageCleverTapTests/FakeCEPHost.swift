@@ -32,6 +32,10 @@ final class FakeCEPHost: DigiaCEPHost {
     /// That is the original F1 bug.
     var syncDrop: DropReason?
 
+    /// What ``isReady`` reports. Default `true`, so a suite that does not care
+    /// about the pending buffer delivers straight through.
+    var isReady = true
+
     private(set) var delivered: [CEPTriggerPayload] = []
     private(set) var controllers: [PresentationController] = []
     private var nextId = 0
