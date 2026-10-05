@@ -1,5 +1,5 @@
 {
-  "originHash" : "9ff1e56c1fa5a61d051c2a06b101e7d71bc54a1871efc67bcfbae4f4bad7dc9e",
+  "originHash" : "9901a294f2d3cada7613ac92fa05bc409ac066b45312d7645ac970fd17fed122",
   "pins" : [
     {
       "identity" : "clevertap-ios-sdk",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/airbnb/lottie-spm.git",
       "state" : {
-        "revision" : "69faaefa7721fba9e434a52c16adf4329c9084db",
-        "version" : "4.6.0"
+        "revision" : "0aff16288f8dc1e3dab35cbf5cf45979673fd3df",
+        "version" : "4.6.1"
       }
     },
     {
