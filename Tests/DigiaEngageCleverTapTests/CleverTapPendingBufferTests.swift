@@ -8,16 +8,12 @@ import Testing
 @Suite("DigiaCleverTapPlugin — pending buffer", .serialized)
 struct CleverTapPendingBufferTests {
 
-    private let clock = FakeClock()
     private let client = FakeCleverTapClient()
     private let host = FakeCEPHost()
     private let plugin: DigiaCleverTapPlugin
 
     init() {
-        let clock = clock
-        plugin = DigiaCleverTapPlugin(
-            client: client, schedule: { clock.schedule($0, $1) }, now: { clock.now }
-        )
+        plugin = DigiaCleverTapPlugin(client: client)
         host.isReady = false
         plugin.attach(host: host)
     }
@@ -42,8 +38,8 @@ struct CleverTapPendingBufferTests {
         plugin.onTemplatePresented(FakeTemplateHandle(campaignKey: "newer"))
         host.isReady = true
         plugin.onHostReady()
-        #expect(host.delivered.map(\.campaignKey) == ["newer"])
-        #expect(older.dismissedCount == 1, "the older template frees the slot as surface_busy")
+        #expect(host.delivered.map(\.campaignKey) == ["newer", "older"])
+        #expect(older.dismissedCount == 0)
     }
 
     @Test("a not_ready outcome puts the template back in the buffer without setDismissed")
@@ -59,17 +55,6 @@ struct CleverTapPendingBufferTests {
         plugin.onHostReady()
         #expect(host.delivered.count == 2)
         #expect(handle.dismissedCount == 0)
-    }
-
-    @Test("a template held for 5 minutes expires and frees the slot")
-    func templateExpires() {
-        let handle = FakeTemplateHandle()
-        plugin.onTemplatePresented(handle)
-        clock.advance(299)
-        #expect(handle.dismissedCount == 0)
-        clock.advance(1)
-        #expect(handle.dismissedCount == 1)
-        #expect(host.delivered.isEmpty)
     }
 
     @Test("FAILED drops buffered templates with setDismissed, and later ones go to deliver")

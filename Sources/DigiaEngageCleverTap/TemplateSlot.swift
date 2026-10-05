@@ -86,10 +86,14 @@ final class TemplateSlot {
     ///
     /// Total function: never throws, and always leaves the slot consistent — the
     /// invocation is either delivered and owned, or handed straight back to
-    /// CleverTap. Returns `false` only when Core is not ready: the slot is not
-    /// taken, the handle is not released, and the caller buffers it again.
+    /// CleverTap. `nil` means nothing was delivered: the handle is already
+    /// free, or `holdIfNotReady` held it again.
     @discardableResult
-    func deliver(handle: TemplateHandle, trigger: CEPTriggerPayload) -> Bool {
+    func deliver(
+        handle: TemplateHandle,
+        trigger: CEPTriggerPayload,
+        holdIfNotReady: (CampaignPresentation) -> Bool
+    ) -> CampaignPresentation? {
         // Defensive. CleverTap's one-visual-in-app rule should make an overlap
         // unreachable; if it happens anyway, freeing the incumbent beats wedging
         // the slot. `cancel()` asks core to end it properly; `release` is the
@@ -107,11 +111,12 @@ final class TemplateSlot {
         if active != nil {
             Log.warn("slot was re-taken while superseding — declining '\(handle.templateName)'")
             handle.setDismissed()
-            return true
+            return nil
         }
 
         let presentation = host.deliver(trigger)
-        if presentation.outcome.settledValue?.isHostNotReady == true { return false }
+        // A held template keeps the slot until it is shown or dropped.
+        if holdIfNotReady(presentation) { return nil }
         let entry = Entry(presentation: presentation, handle: handle)
         active = entry
 
@@ -128,7 +133,7 @@ final class TemplateSlot {
         if presentation.holdReleased.isSettled {
             Log.info("Dropped synchronously — freeing the in-app slot", campaign: trigger.campaignKey)
             release(entry)
-            return true
+            return presentation
         }
 
         // `weak self` and `weak entry`: if core never settles this presentation
@@ -139,7 +144,7 @@ final class TemplateSlot {
             guard let self, let entry else { return }
             self.release(entry)
         }
-        return true
+        return presentation
     }
 
     /// CleverTap asked the template to close — an in-app action used the close

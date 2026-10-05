@@ -45,15 +45,23 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     private var host: DigiaCEPHost?
     private var slot: TemplateSlot?
 
-    /// Set by ``onHostInitFailed()``: deliver directly so Core drops and the CEP settles at once.
+    /// Template triggers held while Core is not ready. CleverTap's slot stays
+    /// held until each is shown or dropped.
+    private lazy var pendingTemplates = PendingPayloadBuffer(
+        onDrop: { [weak self] in self?.onPendingTemplateDropped($0, $1) }
+    )
+
+    /// The CleverTap handle of each held template, keyed by `cepCampaignId`.
+    private var heldTemplates: [String: TemplateHandle] = [:]
+
+    /// Display units held until Core is ready, in arrival order, one per unit.
+    private lazy var pendingDisplayUnits = PendingPayloadBuffer(
+        onDrop: { [weak self] in self?.onPendingDisplayUnitDropped($0, $1) },
+        arrivalOrder: true
+    )
+
+    /// Core init failed: stop holding until Core is ready again.
     private var hostFailed = false
-
-    /// Templates held while Core is not ready. A held template keeps CleverTap's
-    /// in-app slot until it flushes, expires or drops.
-    private let pendingTemplates: PendingPayloadBuffer<(handle: TemplateHandle, trigger: CEPTriggerPayload)>
-
-    /// Native Display campaigns held while Core is not ready: arrival order, one per unit id.
-    private let pendingDisplayUnits: PendingPayloadBuffer<CEPTriggerPayload>
 
     public convenience init() {
         self.init(client: CleverTapSdkClient())
@@ -61,27 +69,10 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
     init(
         client: CleverTapClient,
-        mapper: CleverTapPayloadMapper = CleverTapPayloadMapper(),
-        schedule: @escaping PendingPayloadBuffer<CEPTriggerPayload>.Scheduler = PendingPayloadBuffer<CEPTriggerPayload>.mainQueueScheduler,
-        now: @escaping () -> Date = Date.init
+        mapper: CleverTapPayloadMapper = CleverTapPayloadMapper()
     ) {
         self.client = client
         self.mapper = mapper
-        pendingTemplates = PendingPayloadBuffer(now: now, schedule: schedule) { pending, reason in
-            Log.warn(
-                "dropping buffered '\(pending.handle.templateName)' as \(reason.wire) — freeing the slot",
-                campaign: pending.trigger.campaignKey, stage: .trigger, reason: reason
-            )
-            pending.handle.setDismissed()
-        }
-        pendingDisplayUnits = PendingPayloadBuffer(
-            order: .inline(id: Self.displayUnitId), now: now, schedule: schedule
-        ) { trigger, reason in
-            Log.warn(
-                "dropping buffered Native Display '\(Self.displayUnitId(trigger))' as \(reason.wire)",
-                campaign: trigger.campaignKey, stage: .trigger, reason: reason
-            )
-        }
 
         // Safety net only — by the time a plugin instance exists CleverTap has
         // usually initialised, and any campaign that targeted the template before
@@ -119,7 +110,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
             #endif
         }
 
-        if host.isReady { flushPending() }
+        if host.isReady { onHostReady() }
 
         // Recovers units whose live callback fired before this plugin existed —
         // the native-before-wrapper race. Not campaign history: CleverTap's cache
@@ -131,14 +122,21 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     /// Called by Digia core when it becomes ready. Do not call manually.
     public func onHostReady() {
         hostFailed = false
-        flushPending()
+        let templates = pendingTemplates.takeAll()
+        let units = pendingDisplayUnits.takeAll()
+        guard !templates.isEmpty || !units.isEmpty else { return }
+        Log.info("Digia ready — flushing held payloads (templates=\(templates.count), displayUnits=\(units.count))")
+        for trigger in templates {
+            if let handle = heldTemplates.removeValue(forKey: trigger.cepCampaignId) {
+                presentTemplate(handle, trigger)
+            }
+        }
+        units.forEach(receiveDisplayUnit)
     }
 
     /// Called by Digia core when initialization fails. Do not call manually.
     public func onHostInitFailed() {
-        hostFailed = true
-        pendingTemplates.dropAll(DropReason.initializationFailed)
-        pendingDisplayUnits.dropAll(DropReason.initializationFailed)
+        onHostFailed()
     }
 
     /// Called by `Digia.setCurrentScreen()`. Do not call manually.
@@ -154,6 +152,7 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         // not necessarily run yet — this is the last moment the in-app slot can
         // be recovered from inside the plugin.
         slot?.teardown()
+        hostFailed = false
         pendingTemplates.dropAll(DropReason.pluginDetached)
         pendingDisplayUnits.dropAll(DropReason.pluginDetached)
         CleverTapTemplates.detach(self)
@@ -161,7 +160,6 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
         slot = nil
         host = nil
-        hostFailed = false
         Log.info("Plugin detached")
     }
 
@@ -194,6 +192,22 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     // MARK: - TemplateSink
 
     func onTemplatePresented(_ handle: TemplateHandle) {
+        guard host != nil else {
+            // Cannot deliver, so the invocation must be handed back immediately —
+            // holding it would stall every later in-app (`clevertap.md` §9.6).
+            let key = handle.string(named: CleverTapTemplates.argCampaignKey)?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            Log.warn(
+                "dropping '\(handle.templateName)' as not_ready — no Digia host attached — freeing the slot",
+                campaign: (key?.isEmpty ?? true) ? nil : key,
+                stage: .trigger,
+                reason: DropReason.notReady
+            )
+            handle.setDismissed()
+            return
+        }
+
         guard let trigger = mapper.mapTemplate(handle) else {
             // Nothing to deliver: without a campaign key core has no campaign to
             // look up. Free the slot rather than deliver a trigger core could
@@ -207,22 +221,23 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         }
 
         Log.info("Received (template=\(handle.templateName))", campaign: trigger.campaignKey)
-        guard canDeliver else {
-            Log.info("Core not ready — buffering the template", campaign: trigger.campaignKey)
-            pendingTemplates.add((handle, trigger))
-            return
-        }
-        deliverTemplate(handle: handle, trigger: trigger)
+        presentTemplate(handle, trigger)
     }
 
-    private func deliverTemplate(handle: TemplateHandle, trigger: CEPTriggerPayload, heldAt: Date? = nil) {
-        guard let slot else {
+    /// Delivers a template, or holds it while Core is not ready.
+    private func presentTemplate(_ handle: TemplateHandle, _ trigger: CEPTriggerPayload) {
+        guard let host, let slot else {
             handle.setDismissed()
             return
         }
-        guard !slot.deliver(handle: handle, trigger: trigger) else { return }
-        Log.info("Core not ready — buffering the template again", campaign: trigger.campaignKey)
-        pendingTemplates.add((handle, trigger), heldAt: heldAt)
+        if !hostFailed && !host.isReady {
+            Log.info("Held until Digia is ready", campaign: trigger.campaignKey)
+            holdTemplate(handle, trigger)
+            return
+        }
+        _ = slot.deliver(handle: handle, trigger: trigger) { presentation in
+            holdIfNotReady(presentation) { holdTemplate(handle, $0) }
+        }
     }
 
     func onTemplateClosed(_ handle: TemplateHandle) {
@@ -243,62 +258,30 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
 
     private func onDisplayUnitsLoaded(_ units: [DisplayUnit]) {
         guard !units.isEmpty else { return }
-        let triggers = mapper.mapDisplayUnits(units)
-        guard canDeliver else {
-            triggers.forEach { pendingDisplayUnits.add($0) }
-            Log.info("Core not ready — buffering \(triggers.count) Native Display campaign(s)")
-            return
-        }
-        deliverDisplayUnits(triggers.map { ($0, nil) })
+        mapper.mapDisplayUnits(units).forEach(receiveDisplayUnit)
     }
 
-    private var canDeliver: Bool { host?.isReady == true || (host != nil && hostFailed) }
-
-    /// Delivers what was buffered: the newest template, then Native Display in arrival order.
-    /// Older templates drop as surface_busy, because the slot would let the oldest win.
-    private func flushPending() {
-        var templates = pendingTemplates.drain()
-        if !templates.isEmpty {
-            let newest = templates.removeFirst()
-            for older in templates.map(\.item) {
-                Log.warn(
-                    "dropping buffered '\(older.handle.templateName)' as surface_busy — a newer template flushes",
-                    campaign: older.trigger.campaignKey, stage: .trigger, reason: DropReason.surfaceBusy
-                )
-                older.handle.setDismissed()
-            }
-            deliverTemplate(handle: newest.item.handle, trigger: newest.item.trigger, heldAt: newest.heldAt)
-        }
-        deliverDisplayUnits(pendingDisplayUnits.drain().map { ($0.item, $0.heldAt) })
-    }
-
-    private nonisolated static func displayUnitId(_ trigger: CEPTriggerPayload) -> String {
-        trigger.cepMetadata[CleverTapPayloadMapper.metadataDisplayUnitId] ?? ""
-    }
-
-    /// Hands mapped units to Digia.
+    /// Delivers a display unit, or holds it while Core is not ready.
     ///
     /// Every delivery of a unit is dispatched, including a repeat of one already
     /// seen: CleverTap re-delivers its active units on each refresh, and
     /// de-duplicating here would silently drop a legitimate re-trigger. Nothing
     /// binds to the outcome — Native Display holds no slot, so a dropped unit
     /// costs nothing and needs no release.
-    private func deliverDisplayUnits(_ triggers: [(trigger: CEPTriggerPayload, heldAt: Date?)]) {
-        guard let host, !triggers.isEmpty else { return }
-        Log.info("delivering \(triggers.count) Native Display campaign(s)")
-        for (trigger, heldAt) in triggers {
-            let unitId = Self.displayUnitId(trigger)
-            let presentation = host.deliver(trigger)
-            if presentation.outcome.settledValue?.isHostNotReady == true {
-                pendingDisplayUnits.add(trigger, heldAt: heldAt)
-                continue
-            }
-            // Core drops its listeners on settlement, so this needs no
-            // unsubscribe and no task — which is the whole difference between a
-            // channel that holds a slot and one that only reports.
-            _ = presentation.onSignal { [weak self] signal in
-                self?.trackDisplayUnit(signal, unitId: unitId)
-            }
+    private func receiveDisplayUnit(_ trigger: CEPTriggerPayload) {
+        guard let host, hostFailed || host.isReady else {
+            Log.info("Display unit held until Digia is ready (unitID=\(trigger.cepCampaignId))", campaign: trigger.campaignKey)
+            pendingDisplayUnits.add(trigger)
+            return
+        }
+        let unitId = trigger.cepCampaignId
+        let presentation = host.deliver(trigger)
+        if holdIfNotReady(presentation, hold: { pendingDisplayUnits.add($0) }) { return }
+        // Core drops its listeners on settlement, so this needs no
+        // unsubscribe and no task — which is the whole difference between a
+        // channel that holds a slot and one that only reports.
+        _ = presentation.onSignal { [weak self] signal in
+            self?.trackDisplayUnit(signal, unitId: unitId)
         }
     }
 
@@ -318,6 +301,55 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
             client.pushDisplayUnitClicked(unitId)
             Log.info("Native Display click reported for '\(unitId)'")
         }
+    }
+
+    // MARK: - Pending buffer
+
+    /// Holds a not-ready payload again and returns true; stops holding on
+    /// initialization_failed.
+    private func holdIfNotReady(
+        _ presentation: CampaignPresentation,
+        hold: (CEPTriggerPayload) -> Void
+    ) -> Bool {
+        guard case .dropped(let reason, _)? = presentation.outcome.settledValue else { return false }
+        switch reason {
+        case .notReady where !hostFailed, .notInitialized where !hostFailed:
+            Log.info("Digia not ready — held again (reason=\(reason.wire))", campaign: presentation.trigger.campaignKey)
+            hold(presentation.trigger)
+            return true
+        case .initializationFailed:
+            onHostFailed()
+        default:
+            break
+        }
+        return false
+    }
+
+    private func holdTemplate(_ handle: TemplateHandle, _ trigger: CEPTriggerPayload) {
+        heldTemplates[trigger.cepCampaignId] = handle
+        pendingTemplates.add(trigger)
+    }
+
+    private func onHostFailed() {
+        guard !hostFailed else { return }
+        hostFailed = true
+        pendingTemplates.dropAll(DropReason.initializationFailed)
+        pendingDisplayUnits.dropAll(DropReason.initializationFailed)
+    }
+
+    private func onPendingTemplateDropped(_ trigger: CEPTriggerPayload, _ reason: DiagnosticReason) {
+        Log.warn(
+            "Dropped while held; freeing the in-app slot",
+            campaign: trigger.campaignKey, stage: .trigger, reason: reason
+        )
+        heldTemplates.removeValue(forKey: trigger.cepCampaignId)?.setDismissed()
+    }
+
+    private func onPendingDisplayUnitDropped(_ trigger: CEPTriggerPayload, _ reason: DiagnosticReason) {
+        Log.warn(
+            "Display unit dropped while held (unitID=\(trigger.cepCampaignId))",
+            campaign: trigger.campaignKey, stage: .trigger, reason: reason
+        )
     }
 
     // MARK: - Static setup helpers
