@@ -24,7 +24,8 @@ struct CleverTapPayloadMapperTests {
 
         #expect(trigger.campaignKey == "onboarding_tip")
         #expect(trigger.cepCampaignId == "onboarding_tip")
-        #expect(trigger.cepMetadata[CleverTapPayloadMapper.metadataTemplateName] == CleverTapTemplates.templateName)
+        // Core reads this literal pair to drop inline and floater campaigns. Do not rename it.
+        #expect(trigger.cepMetadata["templateName"] == "DigiaTemplate")
         #expect(trigger.variables == nil, "no variables declared")
     }
 
