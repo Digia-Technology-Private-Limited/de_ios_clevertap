@@ -1,13 +1,13 @@
 {
-  "originHash" : "9ff1e56c1fa5a61d051c2a06b101e7d71bc54a1871efc67bcfbae4f4bad7dc9e",
+  "originHash" : "3e3ebbe9a4bccb4a9af9ad9fef525c5658de3b3fc8646e0411bdb0b3c5aa950d",
   "pins" : [
     {
       "identity" : "clevertap-ios-sdk",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CleverTap/clevertap-ios-sdk.git",
       "state" : {
-        "revision" : "ef323696c2789e71b58c2a281117fb5013d4a4f5",
-        "version" : "7.5.1"
+        "revision" : "602ddcd2346d073e34d4920b4ee9f15bd1fe8229",
+        "version" : "7.8.2"
       }
     },
     {
