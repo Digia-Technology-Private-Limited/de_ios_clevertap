@@ -10,7 +10,7 @@ A [Digia Engage](https://github.com/Digia-Technology-Private-Limited/digia_engag
 
 | | Minimum |
 |---|---|
-| iOS | 17.0 |
+| iOS | 15.0 |
 | Swift | 6.0 |
 | Xcode | 16.0 |
 | CleverTap iOS SDK | 7.5.1 |
