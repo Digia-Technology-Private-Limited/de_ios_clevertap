@@ -300,6 +300,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         case .clicked:
             client.pushDisplayUnitClicked(unitId)
             Log.info("Native Display click reported for '\(unitId)'")
+        @unknown default:
+            break
         }
     }
 

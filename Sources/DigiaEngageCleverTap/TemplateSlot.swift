@@ -198,6 +198,8 @@ final class TemplateSlot {
         case .clicked:
             Log.info("CEP click marked (triggerAction)", campaign: entry.presentation.trigger.campaignKey)
             entry.handle.triggerAction(named: Self.primaryActionArgument)
+        @unknown default:
+            break
         }
     }
 
