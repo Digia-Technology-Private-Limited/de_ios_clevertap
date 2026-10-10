@@ -10,7 +10,7 @@ A [Digia Engage](https://github.com/Digia-Technology-Private-Limited/digia_engag
 
 | | Minimum |
 |---|---|
-| iOS | 17.0 |
+| iOS | 15.0 |
 | Swift | 6.0 |
 | Xcode | 16.0 |
 | CleverTap iOS SDK | 7.5.1 |
@@ -24,8 +24,8 @@ Add the package to your `Package.swift`:
 ```swift
 dependencies: [
     .package(
-        url: "https://github.com/Digia-Technology-Private-Limited/digia_engage_clevertap_ios.git",
-        from: "1.0.0"
+        url: "https://github.com/Digia-Technology-Private-Limited/de_ios_clevertap.git",
+        from: "2.0.0"
     ),
 ]
 ```
@@ -36,7 +36,7 @@ Then add `DigiaEngageCleverTap` as a target dependency:
 .target(
     name: "YourTarget",
     dependencies: [
-        .product(name: "DigiaEngageCleverTap", package: "digia_engage_clevertap_ios"),
+        .product(name: "DigiaEngageCleverTap", package: "de_ios_clevertap"),
     ]
 )
 ```
