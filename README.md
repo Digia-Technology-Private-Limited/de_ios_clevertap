@@ -15,8 +15,6 @@ A [Digia Engage](https://github.com/Digia-Technology-Private-Limited/digia_engag
 | Xcode | 16.0 |
 | CleverTap iOS SDK | 7.5.1 |
 
-**iOS 15 is the package's deployment floor, not where campaigns run.** Digia Engage renders campaigns on iOS 17 and later. On earlier versions `Digia.initialize` and `Digia.register` do nothing, so the app builds and runs but shows no Digia campaigns.
-
 ## Installation
 
 ### Swift Package Manager
