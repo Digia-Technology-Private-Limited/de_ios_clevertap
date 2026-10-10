@@ -17,11 +17,12 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // The sibling checkout, not `from: "1.0.0"` — that constraint predates
-        // core's CEPTriggerPayload release and resolves a core this package can no
-        // longer compile against. Repoint at a version tag once core publishes one
-        // carrying the current CEP contract.
-        .package(path: "../core"),
+        // 4.0.0 is the first core release carrying the CEP v2 contract this package
+        // compiles against; a range, so a host app can take any later 4.x.
+        .package(
+            url: "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git",
+            from: "4.0.0"
+        ),
         // A range, never an exact pin. 7.5.1 is the floor (`addActionArgument`,
         // non-visual app functions); an exact pin here propagates into every host
         // app that resolves this package and deadlocks against any other pin on
@@ -35,7 +36,7 @@ let package = Package(
         .target(
             name: "DigiaEngageCleverTap",
             dependencies: [
-                .product(name: "DigiaEngage", package: "core"),
+                .product(name: "DigiaEngage", package: "digia_engage_ios"),
                 .product(name: "CleverTapSDK", package: "clevertap-ios-sdk"),
             ],
             path: "Sources/DigiaEngageCleverTap"

@@ -1,5 +1,5 @@
 {
-  "originHash" : "9ff1e56c1fa5a61d051c2a06b101e7d71bc54a1871efc67bcfbae4f4bad7dc9e",
+  "originHash" : "b11b0a4dd29bec3c787553ca664d1783ee3906040099b39fa378568bceb3fff8",
   "pins" : [
     {
       "identity" : "clevertap-ios-sdk",
@@ -11,12 +11,21 @@
       }
     },
     {
+      "identity" : "digia_engage_ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Digia-Technology-Private-Limited/digia_engage_ios.git",
+      "state" : {
+        "revision" : "145f472318561bdc049e2652510734d119d33a6a",
+        "version" : "4.0.0"
+      }
+    },
+    {
       "identity" : "lottie-spm",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/airbnb/lottie-spm.git",
       "state" : {
-        "revision" : "69faaefa7721fba9e434a52c16adf4329c9084db",
-        "version" : "4.6.0"
+        "revision" : "0aff16288f8dc1e3dab35cbf5cf45979673fd3df",
+        "version" : "4.6.1"
       }
     },
     {
