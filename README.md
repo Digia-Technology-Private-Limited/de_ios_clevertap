@@ -13,7 +13,11 @@ A [Digia Engage](https://github.com/Digia-Technology-Private-Limited/digia_engag
 | iOS | 15.0 |
 | Swift | 6.0 |
 | Xcode | 16.0 |
-| CleverTap iOS SDK | 7.5.1 |
+| DigiaEngage | `>= 4.0.0, < 5.0.0` |
+| CleverTap iOS SDK | `>= 7.5.1, < 8.0.0` |
+
+Both dependencies are bounded below the next major. Widen either ceiling only
+after testing that major in a new plugin release.
 
 ## Installation
 
