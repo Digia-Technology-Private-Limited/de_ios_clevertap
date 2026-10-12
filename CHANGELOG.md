@@ -2,6 +2,17 @@
 
 All notable changes to Digia Engage CleverTap (iOS) are documented in this file.
 
+## [2.0.1] - 2026-10-12
+
+### Improvements
+
+- Documented the supported DigiaEngage (`>= 4.0.0, < 5.0.0`) and CleverTap iOS SDK (`>= 7.5.1, < 8.0.0`) version ranges in the README.
+
+### Bug Fixes
+
+- Corrected the README's Swift Package Manager installation instructions, which referenced the old repository name/URL, an outdated version pin, and the wrong minimum iOS version.
+- Fixed the README's `Digia.initialize` usage example, which did not compile against the current API.
+
 ## [2.0.0] - 2026-10-10
 
 ### New Features

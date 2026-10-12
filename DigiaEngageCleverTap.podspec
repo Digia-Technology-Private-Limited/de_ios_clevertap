@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'DigiaEngageCleverTap'
-  s.version          = '2.0.0'
+  s.version          = '2.0.1'
   s.summary          = 'Digia Engage CleverTap plugin for iOS.'
   s.description      = <<-DESC
     Routes CleverTap custom-template campaigns and display units into Digia Engage.
