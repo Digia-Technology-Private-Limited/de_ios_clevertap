@@ -13,9 +13,10 @@ enum Log {
         _ message: @autoclosure @escaping () -> String,
         campaign: String? = nil,
         stage: TimelineStage? = nil,
-        reason: DiagnosticReason? = nil
+        reason: DiagnosticReason? = nil,
+        extras: [String: String]? = nil
     ) {
-        log.w(message(), campaign: campaign, stage: stage, reason: reason)
+        log.w(message(), campaign: campaign, stage: stage, reason: reason, extras: extras)
     }
 
     static func error(_ message: @autoclosure @escaping () -> String, campaign: String? = nil) {

@@ -98,7 +98,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
         if !client.hasInstance() {
             Log.warn(
                 "no CleverTap instance available — Native Display and screen forwarding are "
-                    + "inactive. Initialise CleverTap before Digia.register()."
+                    + "inactive. Initialise CleverTap before Digia.register().",
+                extras: ["cep": id]
             )
         } else {
             // Re-installed unconditionally: constructing a replacement plugin
@@ -202,7 +203,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
                 "dropping '\(handle.templateName)' as not_ready — no Digia host attached — freeing the slot",
                 campaign: (key?.isEmpty ?? true) ? nil : key,
                 stage: .trigger,
-                reason: DropReason.notReady
+                reason: DropReason.notReady,
+                extras: ["cep": id]
             )
             handle.setDismissed()
             return
@@ -214,7 +216,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
             // only drop.
             Log.warn(
                 "'\(handle.templateName)' carries no \(CleverTapTemplates.argCampaignKey) "
-                    + "— freeing the slot without rendering"
+                    + "— freeing the slot without rendering",
+                extras: ["cep": id]
             )
             handle.setDismissed()
             return
@@ -342,7 +345,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     private func onPendingTemplateDropped(_ trigger: CEPTriggerPayload, _ reason: DropReason) {
         Log.warn(
             "Dropped while held; freeing the in-app slot",
-            campaign: trigger.campaignKey, stage: .trigger, reason: reason
+            campaign: trigger.campaignKey, stage: .trigger, reason: reason,
+            extras: ["cep": id]
         )
         heldTemplates.removeValue(forKey: trigger.cepCampaignId)?.setDismissed()
     }
@@ -350,7 +354,8 @@ public final class DigiaCleverTapPlugin: DigiaCEPPlugin, TemplateSink {
     private func onPendingDisplayUnitDropped(_ trigger: CEPTriggerPayload, _ reason: DropReason) {
         Log.warn(
             "Display unit dropped while held (unitID=\(trigger.cepCampaignId))",
-            campaign: trigger.campaignKey, stage: .trigger, reason: reason
+            campaign: trigger.campaignKey, stage: .trigger, reason: reason,
+            extras: ["cep": id]
         )
     }
 
