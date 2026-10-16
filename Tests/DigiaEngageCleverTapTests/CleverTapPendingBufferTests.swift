@@ -101,4 +101,50 @@ struct CleverTapPendingBufferTests {
         plugin.onHostReady()
         #expect(host.delivered.map(\.cepCampaignId) == ["u1", "u1"])
     }
+
+    @Test("superseded drop from pending buffer reaches HealthSink with cep = clevertap")
+    func supersededDropReachesHealthSink() {
+        let healthSink = HealthSink()
+        let recorder = HealthRecorder()
+        healthSink.activate(recorder.record)
+        defer { healthSink.resetForTest() }
+
+        var handles: [FakeTemplateHandle] = []
+        for i in 1...20 {
+            let handle = FakeTemplateHandle(campaignKey: "cmp_\(i)")
+            handles.append(handle)
+            plugin.onTemplatePresented(handle)
+        }
+        #expect(recorder.payloads.isEmpty)
+        #expect(handles.allSatisfy { $0.dismissedCount == 0 })
+
+        // 21st template exceeds capacity (20), dropping the oldest (cmp_1) as superseded.
+        let handle21 = FakeTemplateHandle(campaignKey: "cmp_21")
+        plugin.onTemplatePresented(handle21)
+
+        #expect(handles[0].dismissedCount == 1, "oldest template freed on drop")
+        #expect(recorder.payloads.count == 1)
+        let drop = recorder.payloads.first
+        #expect(drop?.reason == "superseded")
+        #expect(drop?.campaignKey == "cmp_1")
+        #expect(drop?.detail?["cep"] == "clevertap")
+    }
 }
+
+private final class HealthRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [HealthEventPayload] = []
+
+    var payloads: [HealthEventPayload] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func record(_ payload: HealthEventPayload) {
+        lock.lock()
+        stored.append(payload)
+        lock.unlock()
+    }
+}
+

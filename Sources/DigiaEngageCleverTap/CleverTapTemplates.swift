@@ -104,7 +104,8 @@ enum CleverTapTemplates {
                 "dropping '\(handle.templateName)' as not_ready — no plugin attached — freeing the in-app slot",
                 campaign: (key?.isEmpty ?? true) ? nil : key,
                 stage: .trigger,
-                reason: DropReason.notReady
+                reason: DropReason.notReady,
+                extras: ["cep": "clevertap"]
             )
             handle.setDismissed()
             return
