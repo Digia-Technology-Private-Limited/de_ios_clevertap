@@ -642,8 +642,9 @@ validate_preflight() {
 }
 
 validate_spec_repo() {
-  local repo_url
-  repo_url=$(pod repo list 2>/dev/null | awk -v name="$SPEC_REPO" '$0 == name { found = 1; next } found && /- URL:/ { print $3; exit }')
+  local repo_list repo_url
+  repo_list=$(pod repo list 2>/dev/null) || fail "Could not list CocoaPods spec repos (pod repo list)."
+  repo_url=$(printf '%s\n' "$repo_list" | awk -v name="$SPEC_REPO" '$0 == name { found = 1; next } found && /- URL:/ { print $3; exit }')
   [ -n "$repo_url" ] || fail "CocoaPods spec repo '$SPEC_REPO' is not registered. Run: pod repo add $SPEC_REPO $SPEC_REPO_URL"
   [ "$repo_url" = "$SPEC_REPO_URL" ] || fail "CocoaPods spec repo '$SPEC_REPO' points to '$repo_url', expected '$SPEC_REPO_URL'."
   if gh api "repos/$SPEC_REPO_SLUG/contents/$POD_NAME/$VERSION" >/dev/null 2>&1; then
