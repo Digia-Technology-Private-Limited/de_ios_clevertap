@@ -36,13 +36,22 @@ export GH_EDITOR=true
 #
 # This script performs external, irreversible actions in live mode (no --dry-run or --no-commit):
 # it commits and pushes release files, tags the release commit, creates a GitHub Release,
-# and publishes the pod to CocoaPods trunk.
+# publishes the pod to the Digia CocoaPods spec repo (digia-podspecs), and attempts a
+# best-effort push to CocoaPods trunk.
 
 readonly COMPONENT_NAME="Digia Engage CleverTap iOS"
 readonly POD_NAME="DigiaEngageCleverTap"
 readonly PODSPEC="DigiaEngageCleverTap.podspec"
 readonly SCHEME_NAME="DigiaEngageCleverTap"
 readonly CHANGELOG="CHANGELOG.md"
+# Digia CocoaPods spec repo. CocoaPods trunk goes read-only on 2026-12-02, so
+# this repo is the required publication target; trunk is best-effort only.
+readonly SPEC_REPO="digia"
+readonly SPEC_REPO_SLUG="Digia-Technology-Private-Limited/digia-podspecs"
+readonly SPEC_REPO_URL="https://github.com/$SPEC_REPO_SLUG.git"
+# Sources used to validate the push: DigiaEngage resolves from the spec repo,
+# third-party CEP SDKs from trunk.
+readonly SPEC_REPO_SOURCES="$SPEC_REPO_URL,https://cdn.cocoapods.org/"
 
 EXPECTED_BRANCH="${RELEASE_BRANCH:-main}"
 
@@ -61,7 +70,8 @@ ALLOW_DIRTY=0
 SKIP_CHANGELOG_CHECK=0
 SKIP_TESTS=0
 SKIP_POD_LINT=0
-TOTAL_STEPS=11
+TOTAL_STEPS=12
+TRUNK_STATUS="not attempted"
 BRANCH=""
 GH_REPO=""
 BASE_VERSION=""
@@ -111,7 +121,10 @@ Flags:
 
 Before running:
   - Ensure working branch matches origin.
-  - Authenticate GitHub CLI ('gh auth status') and CocoaPods trunk ('pod trunk me').
+  - Authenticate GitHub CLI ('gh auth status').
+  - Register the Digia spec repo once:
+      pod repo add digia https://github.com/Digia-Technology-Private-Limited/digia-podspecs.git
+  - CocoaPods trunk auth ('pod trunk me') is optional: the trunk push is best-effort.
 EOF
 }
 
@@ -613,16 +626,30 @@ validate_preflight() {
     fail "GitHub Release $VERSION already exists in $GH_REPO."
   fi
 
+  validate_spec_repo
+
+  # Trunk is best-effort (read-only from 2026-12-02): warn, never block.
   if [ "$SKIP_POD_LINT" -eq 0 ]; then
     if ! pod trunk me > "$RUN_DIR/pod-trunk-me.out" 2>&1; then
-      fail "CocoaPods trunk is not authenticated. Run: pod trunk register engg@digia.tech 'Digia Engineering'"
+      echo "    WARNING: CocoaPods trunk is not authenticated; the best-effort trunk push will be skipped." >&2
     fi
 
     pod_info=$(pod trunk info "$POD_NAME" 2>/dev/null || true)
     if printf '%s\n' "$pod_info" | grep -Eq "^[[:space:]]*-[[:space:]]+$VERSION_REGEX([[:space:]]|$)"; then
-      fail "CocoaPods trunk already contains $POD_NAME $VERSION."
+      echo "    WARNING: CocoaPods trunk already contains $POD_NAME $VERSION; the trunk push will fail (best-effort)." >&2
     fi
   fi
+}
+
+validate_spec_repo() {
+  local repo_url
+  repo_url=$(pod repo list 2>/dev/null | awk -v name="$SPEC_REPO" '$0 == name { found = 1; next } found && /- URL:/ { print $3; exit }')
+  [ -n "$repo_url" ] || fail "CocoaPods spec repo '$SPEC_REPO' is not registered. Run: pod repo add $SPEC_REPO $SPEC_REPO_URL"
+  [ "$repo_url" = "$SPEC_REPO_URL" ] || fail "CocoaPods spec repo '$SPEC_REPO' points to '$repo_url', expected '$SPEC_REPO_URL'."
+  if gh api "repos/$SPEC_REPO_SLUG/contents/$POD_NAME/$VERSION" >/dev/null 2>&1; then
+    fail "Spec repo $SPEC_REPO_SLUG already contains $POD_NAME $VERSION."
+  fi
+  echo "    Spec repo '$SPEC_REPO' is registered and does not yet contain $POD_NAME $VERSION."
 }
 
 bump_release_files() {
@@ -865,12 +892,26 @@ create_github_release() {
     --verify-tag
 }
 
+push_spec_repo() {
+  require_live_mode "Digia spec repo publication" || return 1
+  pod repo push "$SPEC_REPO" "$PODSPEC" --allow-warnings --sources="$SPEC_REPO_SOURCES"
+}
+
+# Best-effort: trunk refuses pushes during the 2026-11 test window and is
+# read-only from 2026-12-02. A failure here never fails the release.
 push_cocoapods_trunk() {
   require_live_mode "CocoaPods trunk publication" || return 1
   if ! pod trunk me > "$RUN_DIR/pod-trunk-me-final.out" 2>&1; then
-    fail "CocoaPods authentication expired. Run: pod trunk register engg@digia.tech 'Digia Engineering'"
+    TRUNK_STATUS="skipped (not authenticated)"
+  elif pod trunk push "$PODSPEC" --allow-warnings; then
+    TRUNK_STATUS="published"
+  else
+    TRUNK_STATUS="failed"
   fi
-  pod trunk push "$PODSPEC" --allow-warnings
+  if [ "$TRUNK_STATUS" != "published" ]; then
+    echo "WARNING: CocoaPods trunk push $TRUNK_STATUS. The release is still valid via the spec repo." >&2
+    echo "         To retry later from tag $VERSION: pod trunk push $PODSPEC --allow-warnings" >&2
+  fi
 }
 
 verify_final_state() {
@@ -881,6 +922,8 @@ verify_final_state() {
   [ "$remote_head" = "$RELEASE_COMMIT" ] || fail "Final branch verification failed for origin/$BRANCH."
   [ "$remote_tag" = "$RELEASE_COMMIT" ] || fail "Final tag verification failed for $VERSION."
   gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1 || fail "GitHub Release $VERSION could not be verified."
+  gh api "repos/$SPEC_REPO_SLUG/contents/$POD_NAME/$VERSION/$PODSPEC" >/dev/null 2>&1 \
+    || fail "Spec repo $SPEC_REPO_SLUG does not contain $POD_NAME/$VERSION/$PODSPEC."
   [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "The release left tracked worktree changes behind."
 }
 
@@ -898,10 +941,11 @@ print_success() {
   echo "Release commit: $RELEASE_COMMIT"
   echo "Git tag: $VERSION"
   echo "GitHub Release: https://github.com/$GH_REPO/releases/tag/$VERSION"
-  echo "CocoaPods: pod trunk push completed successfully"
+  echo "Digia spec repo: $POD_NAME $VERSION published to $SPEC_REPO_URL"
+  echo "CocoaPods trunk (best-effort): $TRUNK_STATUS"
   echo ""
-  echo "Suggested next step: wait 2–5 minutes for CocoaPods propagation, then run:"
-  echo "  pod search $POD_NAME"
+  echo "Suggested next step: in a consumer app whose Podfile lists the spec repo source, run:"
+  echo "  pod repo update $SPEC_REPO && pod update $POD_NAME"
   echo "============================================================"
 }
 
@@ -920,7 +964,7 @@ print_dry_run_success() {
   echo "  - real release files, git index, HEAD, and refs are unchanged"
   echo "  - no commit, push, or tag was created"
   echo "  - no GitHub Release was created"
-  echo "  - nothing was published to CocoaPods trunk"
+  echo "  - nothing was published to the Digia spec repo or CocoaPods trunk"
   echo "  - temporary validation files were removed at exit"
   if [ -n "$LATEST_RELEASED_TAG" ]; then
     echo "Validated against latest released tag: $LATEST_RELEASED_TAG"
@@ -1040,9 +1084,9 @@ run_no_commit() {
 }
 
 run_live() {
-  TOTAL_STEPS=11
+  TOTAL_STEPS=12
 
-  echo "This will commit, push, tag, create a GitHub Release, and publish to CocoaPods trunk."
+  echo "This will commit, push, tag, create a GitHub Release, publish to the Digia spec repo, and try CocoaPods trunk."
 
   run_step \
     "Preflight validation" \
@@ -1099,9 +1143,15 @@ run_live() {
     create_github_release
 
   run_step \
-    "Push to CocoaPods trunk" \
-    "If authentication failed, register with CocoaPods; otherwise resolve the trunk error and rerun: pod trunk push $PODSPEC --allow-warnings" \
-    "CocoaPods trunk accepted $POD_NAME $VERSION" \
+    "Push to the Digia spec repo" \
+    "Resolve the spec repo error (registration, access, or lint), then rerun: pod repo push $SPEC_REPO $PODSPEC --allow-warnings --sources=$SPEC_REPO_SOURCES" \
+    "spec repo $SPEC_REPO accepted $POD_NAME $VERSION" \
+    push_spec_repo
+
+  run_step \
+    "Push to CocoaPods trunk (best-effort)" \
+    "Trunk failures never fail the release; retry later from tag $VERSION: pod trunk push $PODSPEC --allow-warnings" \
+    "the trunk attempt finished without blocking the release" \
     push_cocoapods_trunk
 
   run_step \
