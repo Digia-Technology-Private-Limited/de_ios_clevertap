@@ -104,10 +104,9 @@ final class TemplateSlot {
             release(incumbent)
         }
 
-        // Freeing the incumbent above can re-enter this method, because
-        // dismissed() makes CleverTap pump the next queued in-app synchronously.
-        // If that happened, the slot now belongs to that nested delivery and must
-        // not be clobbered — hand this invocation straight back instead.
+        // Freeing the incumbent above can re-enter this method on a later task, because
+        // dismissed() queues the next in-app async on the notification queue.
+        // If that happened, the slot belongs to the nested delivery — hand this invocation straight back instead.
         if active != nil {
             Log.warn("slot was re-taken while superseding — declining '\(handle.templateName)'")
             handle.setDismissed()
@@ -205,8 +204,8 @@ final class TemplateSlot {
     ///
     /// Idempotent, so every entry point above can call it without checking.
     /// Ordered so the slot reads as free *before* CleverTap is told, because
-    /// `dismissed()` synchronously pumps the next queued in-app, which can
-    /// re-enter ``deliver(handle:trigger:)`` from inside this call.
+    /// `dismissed()` queues the next in-app async, which can
+    /// re-enter ``deliver(handle:trigger:)`` on a later task.
     private func release(_ entry: Entry) {
         guard !entry.released else { return }
         entry.released = true

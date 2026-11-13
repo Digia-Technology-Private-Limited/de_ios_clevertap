@@ -29,11 +29,9 @@ enum Log {
 
 /// Runs `work` on the main actor, inline when the caller is already there.
 ///
-/// CleverTap presents in-apps on the main thread, and the slot's release path
-/// depends on running synchronously inside `setDismissed()` so the next queued
-/// in-app can re-enter the presenter. An unconditional `DispatchQueue.main.async`
-/// would break that ordering, so the hop only happens when it is genuinely
-/// needed.
+/// CleverTap presents in-apps on the main thread, so the slot release must run
+/// there too. The slot reads as free before `dismissed()`, and the next queued
+/// in-app arrives async on a later task.
 func onMainActor(_ work: @escaping @MainActor () -> Void) {
     if Thread.isMainThread {
         MainActor.assumeIsolated(work)
